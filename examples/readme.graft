@@ -1,0 +1,170 @@
+# Genera el README.md del proyecto.
+
+[op: write]
+path: README.md
+<<<CONTENT
+# graft
+
+Apply flexible change files to a project.
+
+`graft` is a small tool for describing file changes in a way that both humans
+and AI assistants can write reliably. It is meant as a softer alternative to
+`git apply` / `patch`: instead of line numbers and hunks, you describe changes
+in terms of text anchors, regular expressions, or full blocks. It is
+idempotent, so re-applying the same change file is safe.
+
+Typical use case: you are working with an AI assistant in a chat, and instead
+of pasting entire files back and forth, you ask for a `.graft` file that
+contains only the changes. You save it in your project, run `graft apply`, and
+you are done.
+
+## Why not `git apply`?
+
+`git apply` uses unified diff hunks with exact line numbers and three lines of
+context. That works fine for machines that produce diffs from real files, but
+AI assistants frequently get line numbers wrong, misindent context, or drop
+trailing whitespace, which makes the patch fail to apply.
+
+`graft` removes line numbers from the equation. A change is described by the
+text to find and the text to replace it with. If the text is ambiguous, you
+narrow it with an anchor or a line range. If the change is already applied,
+`graft` skips it instead of failing.
+
+## Install
+
+Requires Node.js 20+.
+
+    npm install -g @andoni.galardi/graft
+
+For local development:
+
+    npm install
+    npm run build
+    node dist/cli/index.js --help
+
+## Quick start
+
+Create a file called `changes.graft` with something like:
+
+    [op: mkdir]
+    path: src/components
+
+    [op: rename]
+    path: src/old-name.ts
+    to: src/new-name.ts
+
+    [op: delete]
+    path: src/unused.ts
+
+    [op: insert-after]
+    path: src/index.ts
+    anchor: "export * from './app';"
+    ...CONTENT block with the new export...
+
+    [op: patch]
+    path: src/utils.ts
+    scope-after: 'export function add'
+    ...FIND and REPLACE blocks...
+
+See `docs/format-v1.md` for the full grammar with all operations, block
+syntax, and examples.
+
+Preview the changes:
+
+    graft apply changes.graft --dry-run
+
+Apply them for real, with a backup of any modified file:
+
+    graft apply changes.graft --backup
+
+Re-apply the same file later and `graft` will skip everything that is already
+in place.
+
+## CLI
+
+    graft apply <file>   Apply operations from a .graft file
+    graft check <file>   Parse and validate without touching anything
+    graft <file>         Shorthand for 'graft apply <file>'
+    graft --help         Show this help
+    graft --version      Show version
+
+Options:
+
+    --cwd <dir>          Base directory for operations (default: current dir)
+    --dry-run, -n        Show what would happen, write nothing
+    --force, -f          Reserved for future use (currently no-op)
+    --backup, -b         Save originals to .graft/backups/<timestamp>/
+    --json               Output machine-readable JSON instead of text
+    --quiet, -q          Suppress per-operation output (only show summary)
+
+Exit codes:
+
+    0  all operations ok, skipped, or would-apply (dry-run)
+    1  at least one operation failed
+    2  usage or parse error
+
+## Operations
+
+Full reference in `docs/format-v1.md`. Summary:
+
+- `mkdir` — create a directory (recursive).
+- `delete` — delete a file or directory (`recursive: true` to delete a
+  non-empty directory).
+- `write` — create or overwrite a file.
+- `rename` — rename or move a file. Fails if the destination exists.
+- `copy` — duplicate a file.
+- `append` — append content to the end of a file (creates it if missing).
+- `prepend` — prepend content to the start of a file.
+- `insert-after` — insert content right after an anchor.
+- `insert-before` — insert content right before an anchor.
+- `patch` — replace a block of text, by find/replace, or by line range.
+
+All operations are idempotent: re-applying a `.graft` that is already in place
+skips instead of failing.
+
+## Using graft with AI assistants
+
+The reason this tool exists is to make it easy for an AI assistant to produce
+change files that actually apply. The trick is to give the model a good
+prompt with a precise, narrow format.
+
+Copy the section titled "For AI assistants" from `docs/format-v1.md` into your
+chat as part of the system prompt, along with the file or files you want to
+modify. Then ask for the changes as a `.graft` file.
+
+Minimal prompt skeleton:
+
+    You are going to produce a .graft file with the changes I ask for.
+
+    Rules:
+    - Output ONLY the .graft file content. No markdown fences, no prose.
+    - Follow the format in the reference below exactly.
+    - For patches, copy the FIND block character-for-character from the file
+      I showed you. Do not retype it from memory.
+    - If the same text appears more than once, use scope-after / scope-before
+      or add first: true / all: true as appropriate.
+
+    Reference:
+    <paste the "For AI assistants" section of docs/format-v1.md here>
+
+    File: src/example.ts
+    <paste the file contents here>
+
+    Change I want:
+    <describe the change>
+
+    Output the .graft file.
+
+Save the result as `changes.graft`, run `graft apply changes.graft --dry-run`
+to review, and then `graft apply changes.graft` to actually apply.
+
+## Status
+
+Early but functional. The core (parser, matcher, engine, CLI) is complete and
+covered by tests. A VS Code extension is planned; the CLI already supports
+`--json` so the extension can consume structured results directly.
+
+## License
+
+MIT
+CONTENT>>>

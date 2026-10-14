@@ -1,0 +1,19 @@
+node_modules/
+dist/
+
+# graft backups
+.graft/
+
+# logs
+*.log
+npm-debug.log*
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# editor
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+.idea/

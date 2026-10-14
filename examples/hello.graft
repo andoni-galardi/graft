@@ -1,0 +1,20 @@
+# Ejemplo: crea un archivo, lo modifica y luego lo borra.
+
+[op: mkdir]
+path: tmp-example
+
+[op: write]
+path: tmp-example/hello.txt
+<<<CONTENT
+Hello, world!
+Segunda línea.
+CONTENT>>>
+
+[op: patch]
+path: tmp-example/hello.txt
+<<<FIND
+Hello, world!
+FIND>>>
+<<<REPLACE
+Hello, graft!
+REPLACE>>>

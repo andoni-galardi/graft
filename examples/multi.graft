@@ -1,0 +1,50 @@
+# Ejemplo: mezcla de operaciones para un caso realista.
+
+[op: mkdir]
+path: demo
+
+[op: write]
+path: demo/app.ts
+<<<CONTENT
+import { Component } from './component';
+
+export function main() {
+  console.log('hola');
+}
+CONTENT>>>
+
+# Añadir un import justo después del existente
+[op: insert-after]
+path: demo/app.ts
+anchor: "import { Component } from './component';"
+<<<CONTENT
+import { Service } from './service';
+CONTENT>>>
+
+# Renombrar el log dentro de la función
+[op: patch]
+path: demo/app.ts
+scope-after: 'export function main'
+<<<FIND
+  console.log('hola');
+FIND>>>
+<<<REPLACE
+  console.log('adios');
+REPLACE>>>
+
+# Duplicar el archivo y añadir un export al final
+[op: copy]
+path: demo/app.ts
+to: demo/app.backup.ts
+
+[op: append]
+path: demo/app.ts
+<<<CONTENT
+
+export default main;
+CONTENT>>>
+
+# Renombrar el backup para que quede claro qué es
+[op: rename]
+path: demo/app.backup.ts
+to: demo/app.ts.bak

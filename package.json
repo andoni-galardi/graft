@@ -1,0 +1,30 @@
+{
+  "name": "@andoni.galardi/graft",
+  "version": "0.1.0",
+  "description": "Soft patching tool: apply flexible, LLM-friendly change files to a project",
+  "type": "module",
+  "main": "dist/cli/index.js",
+  "bin": {
+    "graft": "dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/cli/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "patch",
+    "diff",
+    "apply",
+    "cli"
+  ],
+  "author": "Andoni Galardi",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.x.x",
+    "typescript": "^5.x.x",
+    "vitest": "^5.0.4"
+  }
+}
