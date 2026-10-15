@@ -27,6 +27,8 @@ narrow it with an anchor or a line range. If the change is already applied,
 
 ## Install
 
+### CLI
+
 Requires Node.js 20+.
 
 ```sh
@@ -41,9 +43,30 @@ npm run build
 node dist/cli/index.js --help
 ```
 
+### VS Code extension
+
+The repository ships a VS Code extension under `editors/vscode/`. It adds a
+side panel with an embedded view of the current `.graft` file and buttons to
+validate or apply it.
+
+To build and install it locally:
+
+```sh
+cd editors/vscode
+npm run package
+```
+
+That produces `graft-vscode-<version>.vsix`. Install it with:
+
+- `Ctrl+Shift+P` → **Extensions: Install from VSIX…** → pick the file.
+
+The `.vsix` is self-contained: it bundles the core, so it does not need
+Node.js, the CLI, or the source repository on the target machine.
+
 ## Quick start
 
-Create a file called `changes.graft` with something like:
+Create a file at `.graft/changes.graft` (the VS Code panel creates it for you
+with the command **Graft: New changes file**):
 
 ```
 [op: mkdir]
@@ -78,17 +101,37 @@ REPLACE>>>
 Preview the changes:
 
 ```sh
-graft apply changes.graft --dry-run
+graft apply .graft/changes.graft --dry-run
 ```
 
 Apply them for real, with a backup of any modified file:
 
 ```sh
-graft apply changes.graft --backup
+graft apply .graft/changes.graft --backup
 ```
 
-Re-apply the same file later and `graft` will skip everything that is already
-in place.
+## The `.applied` sidecar
+
+After a `.graft` file is applied successfully, `graft` writes a small record
+next to it: `.graft/changes.graft.applied`. It contains a SHA-256 of the file
+content at the time of applying, the timestamp, and the number of operations.
+
+On the next run, if the file content has not changed and the sidecar is
+present, `graft apply` refuses to run and exits with code `3`, telling you
+when the file was already applied. That prevents accidental double-applies
+from scripts, cron jobs, or a distracted user.
+
+To force re-application:
+
+- Pass `--force`, or
+- Delete the `.applied` file.
+
+The sidecar is also written when the operations all end up in `skipped`
+(meaning the desired state was already in place), so the state stays coherent
+if you apply the same `.graft` from a machine where the sidecar was missing.
+
+`--dry-run` never writes the sidecar and never short-circuits on an existing
+one.
 
 ## CLI
 
@@ -105,7 +148,7 @@ Options:
 ```
 --cwd <dir>          Base directory for operations (default: current dir)
 --dry-run, -n        Show what would happen, write nothing
---force, -f          Reserved for future use (currently no-op)
+--force, -f          Re-apply even if the file is recorded as already applied
 --backup, -b         Save originals to .graft/backups/<timestamp>/
 --json               Output machine-readable JSON instead of text
 --quiet, -q          Suppress per-operation output (only show summary)
@@ -117,39 +160,82 @@ Exit codes:
 0  all operations ok, skipped, or would-apply (dry-run)
 1  at least one operation failed
 2  usage or parse error
+3  skipped because the file was already applied (use --force to override)
 ```
+
+## VS Code extension
+
+Once installed, the extension adds:
+
+- A **Graft** icon in the Activity Bar. Opening it shows the current
+  `.graft` file with a toolbar.
+- A **Graft changes** section inside the Explorer, with the same content.
+  Useful if you prefer not to dedicate a full Activity Bar slot to it.
+
+Both panels show the same file and stay in sync. The content is read-only;
+use the **Edit** button to open the file in a full editor tab when you want
+to modify it.
+
+Buttons:
+
+- **New** — creates `.graft/changes.graft` if missing, or opens an existing
+  one. Prompts for a name.
+- **Pick** — QuickPick listing all `*.graft` files in the workspace.
+- **Paste** — replaces the current file content with the clipboard. Prompts
+  for confirmation if the current content is non-empty and does not look like
+  a template (only comments). Set `graft.paste.confirmOnReplace` to `false`
+  to skip the confirmation.
+- **Edit** — opens the current `.graft` in a normal editor tab.
+- **Validate** — parses the file and shows the result (operation count, or
+  the exact parse error with line number).
+- **Apply** — runs a dry-run, shows a summary ("N would be applied, M would
+  be skipped"), and asks for confirmation before applying for real.
+
+The extension writes to the same `.applied` sidecar as the CLI, so a file
+applied from VS Code will be recognized as "already applied" by a subsequent
+`graft apply` from the terminal, and vice versa.
+
+### Building the extension from source
+
+```sh
+cd editors/vscode
+npm install
+npm run build           # or: npm run watch
+```
+
+To try it without installing:
+
+- Open the repository in VS Code.
+- Press `F5`. A second VS Code window ("Extension Development Host") opens
+  with the extension loaded.
+- Open a project folder inside that window (`File → Open Folder…`).
+- The Graft panel appears in the Activity Bar and in the Explorer.
 
 ## File format
 
 A `.graft` file is a sequence of operations. Blank lines and comments are
 ignored outside blocks. Inside a block, everything is literal.
 
-### Header
+See [`docs/format-v1.md`](docs/format-v1.md) for the full grammar.
 
-Each operation starts with a header line:
+### Header
 
 ```
 [op: mkdir]
 ```
 
-The name is lowercase ASCII (may contain hyphens). Nothing else may appear on
-the line.
+Lowercase ASCII name, optionally hyphenated. Nothing else on the line.
 
 ### Attributes
-
-After the header, each line is an attribute:
 
 ```
 path: src/components
 ```
 
-The format is `key: value`. Keys are lowercase, hyphenated. Values occupy a
-single line. Quotes around values are optional, and only necessary if the
-value contains a colon.
+`key: value`, one per line. Values may be quoted, but that is only necessary
+when the value contains a colon.
 
 ### Blocks
-
-Some operations take blocks of text, delimited by marker lines:
 
 ```
 <<<CONTENT
@@ -157,28 +243,14 @@ Some operations take blocks of text, delimited by marker lines:
 CONTENT>>>
 ```
 
-Rules:
-
-- The opener is `<<<` followed by an uppercase block name.
-- The closer is the block name followed by `>>>`, alone on the line.
-- Allowed names: `CONTENT`, `FIND`, `REPLACE`.
-- Everything between the markers is literal. Comments, `#`, `[op: ...]`, and
-  `<<<...` have no special meaning inside a block.
-- An empty block is valid.
-- There is no escape mechanism. If your content contains a line that is
-  exactly the closing marker, split the content into two operations.
-
-### Comments
-
-Lines whose first non-whitespace character is `#` are comments, but only
-outside blocks. Inside a block, `#` is literal.
+The opener is `<<<` + an uppercase name. The closer is the name + `>>>`,
+alone on its own line. Allowed names: `CONTENT`, `FIND`, `REPLACE`.
 
 ## Operations
 
 ### mkdir
 
-Creates a directory. Recursive, like `mkdir -p`. Idempotent: skips if the
-directory already exists.
+Creates a directory, recursive. Idempotent.
 
 ```
 [op: mkdir]
@@ -187,8 +259,7 @@ path: src/components
 
 ### delete
 
-Deletes a file or directory. `recursive: true` is required to delete a
-non-empty directory.
+Deletes a file or directory.
 
 ```
 [op: delete]
@@ -198,8 +269,7 @@ recursive: true
 
 ### write
 
-Creates or overwrites a file. Idempotent: skips if the file already has that
-content.
+Creates or overwrites a file.
 
 ```
 [op: write]
@@ -211,8 +281,7 @@ CONTENT>>>
 
 ### rename
 
-Renames or moves a file. Fails if the destination already exists, so you
-cannot accidentally overwrite something.
+Renames or moves a file. Fails if the destination exists.
 
 ```
 [op: rename]
@@ -222,8 +291,8 @@ to: src/new-name.ts
 
 ### copy
 
-Copies a file. Overwrites if the destination exists with different content.
-Idempotent: skips if the destination already has the same content.
+Copies a file. Idempotent: skips if the destination already has the same
+content.
 
 ```
 [op: copy]
@@ -233,8 +302,7 @@ to: src/new-module.ts
 
 ### append
 
-Appends content to the end of a file. Creates the file if it does not exist.
-Idempotent: skips if the content is already at the end.
+Appends content to the end of a file. Creates the file if missing.
 
 ```
 [op: append]
@@ -246,8 +314,7 @@ CONTENT>>>
 
 ### prepend
 
-Prepends content to the start of a file. Creates the file if it does not
-exist. Idempotent: skips if the content is already at the start.
+Prepends content to the start of a file. Creates the file if missing.
 
 ```
 [op: prepend]
@@ -259,15 +326,11 @@ CONTENT>>>
 
 ### insert-after
 
-Inserts content right after an anchor. The anchor must match exactly one
-location in the file; otherwise the operation fails.
+Inserts content right after an anchor. The anchor must match exactly once.
 
 By default, if the anchor ends at the end of a line, the content is placed on
-the following line, with a newline added if needed. This is what you want for
-"add one import after this other import" and similar.
-
-Use `inline: true` to skip the line-snapping and insert the content literally
-right after the anchor, even mid-line.
+the following line, with a newline added if needed. Use `inline: true` to
+insert literally at the anchor position without line-snapping.
 
 ```
 [op: insert-after]
@@ -280,7 +343,7 @@ CONTENT>>>
 
 ### insert-before
 
-Same as `insert-after` but inserts before the anchor.
+Same as `insert-after`, before the anchor.
 
 ```
 [op: insert-before]
@@ -293,9 +356,9 @@ CONTENT>>>
 
 ### patch
 
-The workhorse. Modifies an existing file. Two modes.
+The workhorse. Two modes.
 
-**find/replace mode** (default). Replaces a block of text:
+**find/replace** (default):
 
 ```
 [op: patch]
@@ -312,23 +375,17 @@ Attributes:
 
 - `match`: `exact` (default), `normalized` (ignores leading/trailing
   whitespace and collapses internal whitespace per line), or `regex`.
-- `word: true`: the match must have word boundaries on both sides. Useful for
-  renaming identifiers without touching longer names that contain the same
-  substring (for example `total` vs `subtotal`).
-- `scope-after: <text>`: only search after the first occurrence of `<text>`.
-- `scope-before: <text>`: only search before the first occurrence of `<text>`.
-- `scope-after-line: N`: only search on lines strictly after line N.
-- `scope-before-line: M`: only search on lines strictly before line M.
-- `first: true`: apply to the first match only.
-- `all: true`: apply to every match.
-- `first` and `all` are mutually exclusive.
+- `word: true`: match must have word boundaries on both sides.
+- `scope-after`, `scope-before`: narrow search to a region between text
+  anchors.
+- `scope-after-line`, `scope-before-line`: same, by line number.
+- `first: true` / `all: true`: pick the first match or apply to all. They are
+  mutually exclusive.
+- If the `FIND` block matches more than once and no scope or `first`/`all` is
+  given, the operation fails. This is deliberate: better to fail than to
+  change the wrong place.
 
-By default, if the `FIND` block matches more than one location and no scope or
-`first`/`all` is given, the operation fails. This is deliberate: better to
-fail than to change the wrong place.
-
-**lines mode.** Replaces a range of lines by number. Only use this when you
-know the exact line numbers; otherwise prefer find/replace.
+**lines**: replace a range by line number.
 
 ```
 [op: patch]
@@ -341,13 +398,8 @@ CONTENT>>>
 
 ## Using graft with AI assistants
 
-This is the point of the tool. The trick is to give the model a good prompt
-with a precise, narrow format, and enough context to write the `FIND` blocks
-correctly.
-
-Paste the following into your chat as part of the system prompt, along with
-the file or files you want to modify. Then ask for the changes as a `.graft`
-file.
+This is the point of the tool. Paste the following into your chat as part of
+the system prompt, along with the file or files you want to modify.
 
 ```
 You are going to produce a .graft file with the changes I ask for.
@@ -390,15 +442,43 @@ Change I want:
 Output the .graft file.
 ```
 
-Save the result as `changes.graft`, review it with
-`graft apply changes.graft --dry-run`, then apply it with
-`graft apply changes.graft`.
+Save the result as `.graft/changes.graft`, review it with
+`graft apply .graft/changes.graft --dry-run`, then apply it with
+`graft apply .graft/changes.graft`. Or use the VS Code extension and press
+**Validate** and **Apply**.
 
 ## Status
 
-Early but functional. The core (parser, matcher, engine, CLI) is complete and
-covered by tests. A VS Code extension is planned; the CLI already supports
-`--json` so the extension can consume structured results directly.
+Functional. The core (parser, matcher, engine, CLI) and the VS Code extension
+are complete and covered by tests (~137 tests). The sidecar mechanism
+prevents accidental double-applies. Published on npm and on the VS Code
+Marketplace are planned.
+
+## Development
+
+```sh
+npm install
+npm test                # run all tests
+npm run build           # compile the core and CLI
+npm run build:vscode    # compile the VS Code extension
+npm run build:all       # both
+```
+
+The repository is a small npm workspace:
+
+```
+graft/
+├── src/                    core + CLI
+├── tests/                  tests for the core
+├── docs/format-v1.md       format specification
+├── examples/               sample .graft files
+└── editors/vscode/         VS Code extension
+```
+
+The extension consumes the core via `@andoni.galardi/graft`, resolved through
+the workspace. At package time, esbuild bundles the core into a single
+self-contained `extension.js`, so the resulting `.vsix` does not need the
+repository or Node.js on the target machine.
 
 ## License
 
