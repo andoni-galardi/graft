@@ -23,6 +23,11 @@
         "category": "Graft"
       },
       {
+        "command": "graft.pick",
+        "title": "Pick changes file",
+        "category": "Graft"
+      },
+      {
         "command": "graft.open",
         "title": "Open changes file in editor",
         "category": "Graft"
@@ -54,7 +59,25 @@
           "name": "Changes",
           "type": "webview"
         }
+      ],
+      "explorer": [
+        {
+          "id": "graft.explorer",
+          "name": "Graft changes",
+          "type": "webview",
+          "visibility": "visible"
+        }
       ]
+    },
+    "configuration": {
+      "title": "Graft",
+      "properties": {
+        "graft.paste.confirmOnReplace": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask before replacing a non-empty changes file when using Paste."
+        }
+      }
     }
   },
   "scripts": {

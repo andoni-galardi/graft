@@ -8,18 +8,26 @@ import { getWorkspaceRoot, getGraftDirUri, getDefaultGraftUri } from './paths.js
 import { TEMPLATE } from './template.js';
 
 export class GraftPanelProvider implements vscode.WebviewViewProvider {
-  public static readonly viewType = 'graft.panel';
+  public static readonly activityViewType = 'graft.panel';
+  public static readonly explorerViewType = 'graft.explorer';
 
-  private view?: vscode.WebviewView;
+  private views = new Set<vscode.WebviewView>();
   private currentUri?: vscode.Uri;
+  private lastContent: { path: string | null; text: string } | null = null;
+  private lastStatus: { kind: string; text: string } | null = null;
 
   resolveWebviewView(view: vscode.WebviewView): void {
-    this.view = view;
+    this.views.add(view);
+    view.onDidDispose(() => this.views.delete(view));
+
     view.webview.options = { enableScripts: true };
     view.webview.html = buildHtml();
 
     view.webview.onDidReceiveMessage((msg: { type?: string }) => {
       switch (msg.type) {
+        case 'ready':
+          void this.sendCachedState(view);
+          break;
         case 'new':
           void this.cmdNew();
           break;
@@ -44,15 +52,40 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
     void this.refresh();
   }
 
-  // -------- public API used by commands in extension.ts --------
+  private async sendCachedState(view: vscode.WebviewView): Promise<void> {
+    if (!this.lastContent) {
+      await this.refresh();
+      return;
+    }
+    void view.webview.postMessage({
+      type: 'content',
+      path: this.lastContent.path,
+      text: this.lastContent.text,
+    });
+    if (this.lastStatus) {
+      void view.webview.postMessage({
+        type: 'status',
+        kind: this.lastStatus.kind,
+        text: this.lastStatus.text,
+      });
+    }
+  }
 
   async refresh(): Promise<void> {
-    if (!this.view) return;
+    if (this.views.size === 0) {
+      await this.computeContent();
+      return;
+    }
+    await this.computeContent();
+    this.broadcast({ type: 'content', path: this.lastContent!.path, text: this.lastContent!.text });
+  }
+
+  private async computeContent(): Promise<void> {
     const uri = await this.resolveCurrent();
     this.currentUri = uri;
 
     if (!uri) {
-      this.post({ type: 'content', path: null, text: '' });
+      this.lastContent = { path: null, text: '' };
       return;
     }
 
@@ -64,11 +97,10 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
       text = '';
     }
 
-    this.post({
-      type: 'content',
+    this.lastContent = {
       path: vscode.workspace.asRelativePath(uri, false),
       text,
-    });
+    };
   }
 
   async resolveCurrent(): Promise<vscode.Uri | undefined> {
@@ -77,7 +109,7 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
         await vscode.workspace.fs.stat(this.currentUri);
         return this.currentUri;
       } catch {
-        // el archivo desapareció: cae al default
+        // el archivo desapareció
       }
     }
     const root = getWorkspaceRoot();
@@ -94,11 +126,26 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
   async cmdNew(): Promise<void> {
     const root = getWorkspaceRoot();
     if (!root) {
-      this.post({ type: 'status', kind: 'error', text: 'No workspace folder open.' });
+      this.setStatus('error', 'No workspace folder open.');
       return;
     }
+
+    const name = await vscode.window.showInputBox({
+      title: 'Graft: new changes file',
+      prompt: 'File name (created inside .graft/)',
+      value: 'changes.graft',
+      validateInput: (v) => {
+        const t = v.trim();
+        if (!t) return 'Name cannot be empty.';
+        if (t.includes('/') || t.includes('\\')) return 'No path separators allowed.';
+        if (!t.endsWith('.graft')) return 'Name must end with .graft';
+        return undefined;
+      },
+    });
+    if (!name) return;
+
     const dirUri = getGraftDirUri(root);
-    const fileUri = getDefaultGraftUri(root);
+    const fileUri = vscode.Uri.joinPath(dirUri, name.trim());
 
     let exists = true;
     try {
@@ -106,23 +153,30 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
     } catch {
       exists = false;
     }
+
     if (!exists) {
       await vscode.workspace.fs.createDirectory(dirUri);
       await vscode.workspace.fs.writeFile(fileUri, new TextEncoder().encode(TEMPLATE));
     }
+
     this.currentUri = fileUri;
     await this.refresh();
+    if (exists) {
+      this.setStatus('info', `${name.trim()} already exists. Opened.`);
+    } else {
+      this.setStatus('ok', `Created .graft/${name.trim()}.`);
+    }
   }
 
   async cmdPick(): Promise<void> {
     const root = getWorkspaceRoot();
     if (!root) {
-      this.post({ type: 'status', kind: 'error', text: 'No workspace folder open.' });
+      this.setStatus('error', 'No workspace folder open.');
       return;
     }
     const found = await vscode.workspace.findFiles('**/*.graft', '**/node_modules/**');
     if (found.length === 0) {
-      this.post({ type: 'status', kind: 'info', text: 'No .graft files found in this workspace.' });
+      this.setStatus('info', 'No .graft files found in this workspace.');
       return;
     }
     const items = found.map((u) => ({
@@ -140,7 +194,7 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
   async cmdPaste(): Promise<void> {
     const text = await vscode.env.clipboard.readText();
     if (!text.trim()) {
-      this.post({ type: 'status', kind: 'info', text: 'Clipboard is empty.' });
+      this.setStatus('info', 'Clipboard is empty.');
       return;
     }
 
@@ -157,12 +211,19 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
       existing = '';
     }
 
+    if (existing === text) {
+      this.setStatus('info', 'Clipboard matches current content.');
+      return;
+    }
+
     const nontrivial = existing.split('\n').some((line) => {
       const t = line.trim();
       return t !== '' && !t.startsWith('#');
     });
+    const cfg = vscode.workspace.getConfiguration('graft');
+    const confirm = cfg.get<boolean>('paste.confirmOnReplace', true);
 
-    if (nontrivial) {
+    if (nontrivial && confirm) {
       const choice = await vscode.window.showWarningMessage(
         'Graft: replace current content with clipboard?',
         { modal: true },
@@ -173,13 +234,13 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
 
     await vscode.workspace.fs.writeFile(current, new TextEncoder().encode(text));
     await this.refresh();
-    this.post({ type: 'status', kind: 'ok', text: 'Pasted from clipboard.' });
+    this.setStatus('ok', 'Pasted from clipboard.');
   }
 
   async cmdEdit(): Promise<void> {
     const uri = await this.resolveCurrent();
     if (!uri) {
-      this.post({ type: 'status', kind: 'error', text: 'No changes file selected.' });
+      this.setStatus('error', 'No changes file selected.');
       return;
     }
     await vscode.window.showTextDocument(uri);
@@ -188,37 +249,25 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
   async cmdValidate(): Promise<void> {
     const uri = await this.resolveCurrent();
     if (!uri) {
-      this.post({ type: 'status', kind: 'error', text: 'No changes file selected.' });
+      this.setStatus('error', 'No changes file selected.');
       return;
     }
     let text: string;
     try {
       text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
     } catch (e) {
-      this.post({
-        type: 'status',
-        kind: 'error',
-        text: `Cannot read file: ${e instanceof Error ? e.message : String(e)}`,
-      });
+      this.setStatus('error', `Cannot read file: ${e instanceof Error ? e.message : String(e)}`);
       return;
     }
     try {
       const ops = parseGraftFile(text, uri.fsPath);
       const n = ops.length;
-      this.post({
-        type: 'status',
-        kind: 'ok',
-        text: `OK, ${n} operation${n === 1 ? '' : 's'}.`,
-      });
+      this.setStatus('ok', `OK, ${n} operation${n === 1 ? '' : 's'}.`);
     } catch (e) {
       if (e instanceof GraftParseError) {
-        this.post({ type: 'status', kind: 'error', text: e.message });
+        this.setStatus('error', e.message);
       } else {
-        this.post({
-          type: 'status',
-          kind: 'error',
-          text: `Unexpected error: ${e instanceof Error ? e.message : String(e)}`,
-        });
+        this.setStatus('error', `Unexpected error: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
   }
@@ -226,12 +275,12 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
   async cmdApply(): Promise<void> {
     const uri = await this.resolveCurrent();
     if (!uri) {
-      this.post({ type: 'status', kind: 'error', text: 'No changes file selected.' });
+      this.setStatus('error', 'No changes file selected.');
       return;
     }
     const root = getWorkspaceRoot();
     if (!root) {
-      this.post({ type: 'status', kind: 'error', text: 'No workspace folder open.' });
+      this.setStatus('error', 'No workspace folder open.');
       return;
     }
 
@@ -242,19 +291,15 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
     try {
       dry = await applyGraftFile(graftPath, { cwd, dryRun: true });
     } catch (e) {
-      this.post({
-        type: 'status',
-        kind: 'error',
-        text: `Apply failed: ${e instanceof Error ? e.message : String(e)}`,
-      });
+      this.setStatus('error', `Apply failed: ${e instanceof Error ? e.message : String(e)}`);
       return;
     }
     if (dry.readError) {
-      this.post({ type: 'status', kind: 'error', text: `Cannot read file: ${dry.readError}` });
+      this.setStatus('error', `Cannot read file: ${dry.readError}`);
       return;
     }
     if (dry.parseError) {
-      this.post({ type: 'status', kind: 'error', text: dry.parseError.message });
+      this.setStatus('error', dry.parseError.message);
       return;
     }
 
@@ -281,23 +326,15 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
     try {
       real = await applyGraftFile(graftPath, { cwd });
     } catch (e) {
-      this.post({
-        type: 'status',
-        kind: 'error',
-        text: `Apply failed: ${e instanceof Error ? e.message : String(e)}`,
-      });
+      this.setStatus('error', `Apply failed: ${e instanceof Error ? e.message : String(e)}`);
       return;
     }
     if (real.alreadyApplied && real.appliedRecord) {
-      this.post({
-        type: 'status',
-        kind: 'info',
-        text: `Already applied on ${real.appliedRecord.appliedAt}.`,
-      });
+      this.setStatus('info', `Already applied on ${real.appliedRecord.appliedAt}.`);
       return;
     }
     if (real.parseError) {
-      this.post({ type: 'status', kind: 'error', text: real.parseError.message });
+      this.setStatus('error', real.parseError.message);
       return;
     }
 
@@ -306,17 +343,21 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
     if (c.ok) parts.push(`${c.ok} ok`);
     if (c.skipped) parts.push(`${c.skipped} skipped`);
     if (c.failed) parts.push(`${c.failed} failed`);
-    this.post({
-      type: 'status',
-      kind: c.failed > 0 ? 'error' : 'ok',
-      text: parts.join(' · ') + (real.recorded ? ' (recorded)' : ''),
-    });
+    this.setStatus(
+      c.failed > 0 ? 'error' : 'ok',
+      parts.join(' · ') + (real.recorded ? ' (recorded)' : ''),
+    );
   }
 
-  // -------- internals --------
+  private setStatus(kind: string, text: string): void {
+    this.lastStatus = { kind, text };
+    this.broadcast({ type: 'status', kind, text });
+  }
 
-  private post(msg: unknown): void {
-    void this.view?.webview.postMessage(msg);
+  private broadcast(msg: unknown): void {
+    for (const v of this.views) {
+      void v.webview.postMessage(msg);
+    }
   }
 }
 
@@ -376,6 +417,7 @@ function buildHtml(): string {
     font-size: 12px;
     cursor: pointer;
     border-radius: 2px;
+    white-space: nowrap;
   }
   button:hover { background: var(--vscode-button-secondaryHoverBackground, #45494e); }
   button.primary {
@@ -391,6 +433,7 @@ function buildHtml(): string {
     font-size: var(--vscode-editor-font-size, 12px);
     white-space: pre;
     line-height: 1.4;
+    min-height: 60px;
   }
   .content.empty { color: var(--vscode-descriptionForeground); font-style: italic; }
   .status {
@@ -409,7 +452,7 @@ function buildHtml(): string {
   <div class="path" id="path">(no file)</div>
   <div class="toolbar">
     <button data-cmd="new">New</button>
-    <button data-cmd="pick">Pick…</button>
+    <button data-cmd="pick">Pick</button>
     <button data-cmd="paste">Paste</button>
     <button data-cmd="edit">Edit</button>
   </div>
@@ -448,6 +491,9 @@ function buildHtml(): string {
         statusEl.className = 'status ' + (m.kind || '');
       }
     });
+
+    // Handshake: tell the extension we are ready to receive content.
+    vscode.postMessage({ type: 'ready' });
   </script>
 </body>
 </html>`;
