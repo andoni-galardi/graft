@@ -3,28 +3,28 @@
   "version": "0.1.0",
   "description": "Soft patching tool: apply flexible, LLM-friendly change files to a project",
   "type": "module",
-  "main": "dist/cli/index.js",
+  "main": "dist/index.js",
   "bin": {
     "graft": "dist/cli/index.js"
   },
+  "workspaces": [
+    "editors/vscode"
+  ],
   "scripts": {
     "build": "tsc",
+    "build:vscode": "npm run build --workspace=graft-vscode",
+    "build:all": "npm run build && npm run build:vscode",
     "dev": "tsc --watch",
     "start": "node dist/cli/index.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "keywords": [
-    "patch",
-    "diff",
-    "apply",
-    "cli"
-  ],
+  "keywords": ["patch", "diff", "apply", "cli"],
   "author": "Andoni Galardi",
   "license": "MIT",
   "devDependencies": {
-    "@types/node": "^22.x.x",
-    "typescript": "^5.x.x",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.4",
     "vitest": "^5.0.4"
   }
 }

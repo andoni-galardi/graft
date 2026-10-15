@@ -101,3 +101,19 @@ export interface ApplyOptions {
   force?: boolean;
   backup?: boolean;
 }
+
+export interface AppliedRecord {
+  appliedAt: string;
+  hash: string;
+  operations: number;
+}
+
+export interface ApplyFileResult {
+  alreadyApplied: boolean;
+  appliedRecord?: AppliedRecord;
+  readError?: string;
+  parseError?: { message: string; line: number };
+  results?: OperationResult[];
+  counts?: Record<OperationStatus, number>;
+  recorded?: boolean;
+}

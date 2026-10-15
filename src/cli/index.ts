@@ -2,9 +2,13 @@
 import { promises as fs, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { GraftParseError, parseGraftFile } from '../core/parser.js';
-import { applyOperations } from '../core/engine.js';
-import type { OperationResult, OperationStatus } from '../core/types.js';
+import { parseGraftFile, GraftParseError } from '../core/parser.js';
+import { applyGraftFile } from '../core/apply.js';
+import type {
+  ApplyFileResult,
+  OperationResult,
+  OperationStatus,
+} from '../core/types.js';
 
 interface CliOptions {
   command: 'apply' | 'check' | 'help' | 'version';
@@ -29,15 +33,22 @@ Usage:
 Options:
   --cwd <dir>          Base directory for operations (default: current dir)
   --dry-run, -n        Show what would happen, write nothing
-  --force, -f          Reserved for future use (currently no-op)
+  --force, -f          Re-apply even if the file is recorded as already applied
   --backup, -b         Save originals to .graft/backups/<timestamp>/
   --json               Output machine-readable JSON instead of text
   --quiet, -q          Suppress per-operation output (only show summary)
+
+Sidecar record:
+  After a successful apply, a sidecar file '<file>.applied' is written
+  next to the .graft file. On the next run with the same content, apply is
+  skipped and exit code 3 is returned. Use --force or delete the sidecar
+  to re-apply.
 
 Exit codes:
   0  all operations ok, skipped, or would-apply (dry-run)
   1  at least one operation failed
   2  usage or parse error
+  3  skipped because the file was already applied (use --force to override)
 `;
 
 interface JsonOutput {
@@ -45,6 +56,9 @@ interface JsonOutput {
   file: string;
   cwd: string;
   dryRun: boolean;
+  alreadyApplied?: boolean;
+  appliedAt?: string;
+  readError?: string;
   parseError?: string;
   results?: Array<{
     op: string;
@@ -186,7 +200,13 @@ async function runCheck(opts: CliOptions): Promise<number> {
   } catch {
     if (opts.json) {
       process.stdout.write(
-        JSON.stringify({ ok: false, file, cwd: opts.cwd, dryRun: false, parseError: `cannot read file '${file}'` }) + '\n',
+        JSON.stringify({
+          ok: false,
+          file,
+          cwd: opts.cwd,
+          dryRun: false,
+          readError: `cannot read file '${file}'`,
+        }) + '\n',
       );
     } else {
       console.error(`error: cannot read file '${file}'`);
@@ -197,7 +217,13 @@ async function runCheck(opts: CliOptions): Promise<number> {
     const ops = parseGraftFile(source, file);
     if (opts.json) {
       process.stdout.write(
-        JSON.stringify({ ok: true, file, cwd: opts.cwd, dryRun: false, operationCount: ops.length }) + '\n',
+        JSON.stringify({
+          ok: true,
+          file,
+          cwd: opts.cwd,
+          dryRun: false,
+          operationCount: ops.length,
+        }) + '\n',
       );
     } else {
       process.stdout.write(
@@ -209,7 +235,13 @@ async function runCheck(opts: CliOptions): Promise<number> {
     if (e instanceof GraftParseError) {
       if (opts.json) {
         process.stdout.write(
-          JSON.stringify({ ok: false, file, cwd: opts.cwd, dryRun: false, parseError: e.message }) + '\n',
+          JSON.stringify({
+            ok: false,
+            file,
+            cwd: opts.cwd,
+            dryRun: false,
+            parseError: e.message,
+          }) + '\n',
         );
       } else {
         console.error(`error: ${e.message}`);
@@ -222,62 +254,38 @@ async function runCheck(opts: CliOptions): Promise<number> {
 
 async function runApply(opts: CliOptions): Promise<number> {
   const file = opts.file!;
-  let source: string;
+
+  let result: ApplyFileResult;
   try {
-    source = await fs.readFile(file, 'utf8');
-  } catch {
-    emitJsonError(opts, file, `cannot read file '${file}'`);
-    return 2;
-  }
-
-  let results: OperationResult[];
-  try {
-    const ops = parseGraftFile(source, file);
-    if (ops.length === 0) {
-      if (opts.json) {
-        process.stdout.write(
-          JSON.stringify({
-            ok: true,
-            file,
-            cwd: opts.cwd,
-            dryRun: opts.dryRun,
-            results: [],
-            summary: { ok: 0, skipped: 0, 'would-apply': 0, failed: 0 },
-          }) + '\n',
-        );
-      } else {
-        process.stdout.write(`${file}: no operations\n`);
-      }
-      return 0;
-    }
-
-    if (!opts.json && !opts.quiet) {
-      const mode = opts.dryRun ? ' (dry-run)' : '';
-      process.stdout.write(
-        `graft: applying ${ops.length} operation${ops.length === 1 ? '' : 's'}${mode}\n`,
-      );
-      process.stdout.write(`cwd: ${opts.cwd}\n\n`);
-    }
-
-    results = await applyOperations(ops, {
+    result = await applyGraftFile(file, {
       cwd: opts.cwd,
       dryRun: opts.dryRun,
       force: opts.force,
       backup: opts.backup,
     });
   } catch (e) {
-    if (e instanceof GraftParseError) {
-      emitJsonError(opts, file, e.message);
-      return 2;
+    if (!opts.json) {
+      console.error(`error: ${e instanceof Error ? e.stack ?? e.message : String(e)}`);
     }
-    throw e;
+    return 2;
   }
 
-  const counts = { ok: 0, skipped: 0, 'would-apply': 0, failed: 0 } as Record<
-    OperationStatus,
-    number
-  >;
-  for (const r of results) counts[r.status]++;
+  if (result.readError) {
+    emitJsonError(opts, file, `cannot read file '${file}'`);
+    return 2;
+  }
+
+  if (result.parseError) {
+    emitJsonError(opts, file, result.parseError.message);
+    return 2;
+  }
+
+  if (result.alreadyApplied && result.appliedRecord) {
+    return emitAlreadyApplied(opts, file, result.appliedRecord.appliedAt);
+  }
+
+  const results = result.results ?? [];
+  const counts = result.counts!;
 
   if (opts.json) {
     const out: JsonOutput = {
@@ -299,6 +307,11 @@ async function runApply(opts: CliOptions): Promise<number> {
     process.stdout.write(JSON.stringify(out, null, 2) + '\n');
   } else {
     if (!opts.quiet) {
+      const mode = opts.dryRun ? ' (dry-run)' : '';
+      process.stdout.write(
+        `graft: applying ${results.length} operation${results.length === 1 ? '' : 's'}${mode}\n`,
+      );
+      process.stdout.write(`cwd: ${opts.cwd}\n\n`);
       for (const r of results) printResult(r);
       process.stdout.write('\n');
     }
@@ -313,6 +326,31 @@ async function runApply(opts: CliOptions): Promise<number> {
   return counts.failed > 0 ? 1 : 0;
 }
 
+function emitAlreadyApplied(
+  opts: CliOptions,
+  file: string,
+  appliedAt: string,
+): number {
+  if (opts.json) {
+    process.stdout.write(
+      JSON.stringify({
+        ok: true,
+        file,
+        cwd: opts.cwd,
+        dryRun: false,
+        alreadyApplied: true,
+        appliedAt,
+      }) + '\n',
+    );
+  } else {
+    process.stdout.write(
+      `graft: '${file}' was already applied on ${appliedAt}.\n` +
+        `Use --force or delete '${file}.applied' to re-apply.\n`,
+    );
+  }
+  return 3;
+}
+
 function emitJsonError(opts: CliOptions, file: string, message: string): void {
   if (opts.json) {
     process.stdout.write(
@@ -321,7 +359,7 @@ function emitJsonError(opts: CliOptions, file: string, message: string): void {
         file,
         cwd: opts.cwd,
         dryRun: opts.dryRun,
-        parseError: message,
+        readError: message,
       }) + '\n',
     );
   } else {

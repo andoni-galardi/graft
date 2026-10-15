@@ -1,0 +1,74 @@
+{
+  "name": "graft-vscode",
+  "displayName": "Graft",
+  "description": "Apply .graft change files to your project",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "vscode": "^1.89.0"
+  },
+  "categories": ["Other"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "graft.focus",
+        "title": "Focus panel",
+        "category": "Graft"
+      },
+      {
+        "command": "graft.new",
+        "title": "New changes file",
+        "category": "Graft"
+      },
+      {
+        "command": "graft.open",
+        "title": "Open changes file in editor",
+        "category": "Graft"
+      },
+      {
+        "command": "graft.validate",
+        "title": "Validate changes file",
+        "category": "Graft"
+      },
+      {
+        "command": "graft.apply",
+        "title": "Apply changes file",
+        "category": "Graft"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "graft",
+          "title": "Graft",
+          "icon": "media/graft.svg"
+        }
+      ]
+    },
+    "views": {
+      "graft": [
+        {
+          "id": "graft.panel",
+          "name": "Changes",
+          "type": "webview"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "@andoni.galardi/graft": "file:../.."
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.89.0",
+    "@vscode/vsce": "^3.0.0",
+    "typescript": "^5.0.4"
+  }
+}
