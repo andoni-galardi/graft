@@ -20,8 +20,12 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('graft.new', () => provider.cmdNew()),
     vscode.commands.registerCommand('graft.pick', () => provider.cmdPick()),
     vscode.commands.registerCommand('graft.open', () => provider.cmdEdit()),
+    vscode.commands.registerCommand('graft.paste', () => provider.cmdPaste()),
     vscode.commands.registerCommand('graft.validate', () => provider.cmdValidate()),
     vscode.commands.registerCommand('graft.apply', () => provider.cmdApply()),
+    vscode.commands.registerCommand('graft.applyClipboard', () => provider.cmdApplyClipboard()),
+
+
   );
 
   const watcher = vscode.workspace.createFileSystemWatcher('**/*.graft');

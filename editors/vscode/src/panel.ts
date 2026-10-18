@@ -20,6 +20,9 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
     this.views.add(view);
     view.onDidDispose(() => this.views.delete(view));
 
+    // Show the current file path on the same line as the view title (Timeline style).
+    view.description = this.lastContent?.path ?? undefined;
+
     view.webview.options = { enableScripts: true };
     view.webview.html = buildHtml();
 
@@ -46,6 +49,10 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
         case 'apply':
           void this.cmdApply();
           break;
+        case 'applyClipboard':
+          void this.cmdApplyClipboard();
+          break;
+
       }
     });
 
@@ -57,6 +64,7 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
       await this.refresh();
       return;
     }
+    view.description = this.lastContent.path ?? undefined;
     void view.webview.postMessage({
       type: 'content',
       path: this.lastContent.path,
@@ -72,12 +80,17 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
   }
 
   async refresh(): Promise<void> {
-    if (this.views.size === 0) {
-      await this.computeContent();
-      return;
-    }
     await this.computeContent();
-    this.broadcast({ type: 'content', path: this.lastContent!.path, text: this.lastContent!.text });
+    const displayPath = this.lastContent?.path ?? '';
+    for (const v of this.views) {
+      v.description = displayPath || undefined;
+    }
+    if (this.views.size === 0) return;
+    this.broadcast({
+      type: 'content',
+      path: this.lastContent!.path,
+      text: this.lastContent!.text,
+    });
   }
 
   private async computeContent(): Promise<void> {
@@ -137,7 +150,7 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
       validateInput: (v) => {
         const t = v.trim();
         if (!t) return 'Name cannot be empty.';
-        if (t.includes('/') || t.includes('\\')) return 'No path separators allowed.';
+        if (t.includes('/') || t.includes('\\\\')) return 'No path separators allowed.';
         if (!t.endsWith('.graft')) return 'Name must end with .graft';
         return undefined;
       },
@@ -192,15 +205,19 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
   }
 
   async cmdPaste(): Promise<void> {
+    await this.doPaste({ skipConfirm: false });
+  }
+
+  private async doPaste(opts: { skipConfirm: boolean }): Promise<boolean> {
     const text = await vscode.env.clipboard.readText();
     if (!text.trim()) {
       this.setStatus('info', 'Clipboard is empty.');
-      return;
+      return false;
     }
 
     if (!this.currentUri) {
       await this.cmdNew();
-      if (!this.currentUri) return;
+      if (!this.currentUri) return false;
     }
     const current = this.currentUri;
 
@@ -213,28 +230,31 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
 
     if (existing === text) {
       this.setStatus('info', 'Clipboard matches current content.');
-      return;
+      return true;
     }
 
     const nontrivial = existing.split('\n').some((line) => {
       const t = line.trim();
       return t !== '' && !t.startsWith('#');
     });
-    const cfg = vscode.workspace.getConfiguration('graft');
-    const confirm = cfg.get<boolean>('paste.confirmOnReplace', true);
 
-    if (nontrivial && confirm) {
-      const choice = await vscode.window.showWarningMessage(
-        'Graft: replace current content with clipboard?',
-        { modal: true },
-        'Replace',
-      );
-      if (choice !== 'Replace') return;
+    if (!opts.skipConfirm && nontrivial) {
+      const cfg = vscode.workspace.getConfiguration('graft');
+      const confirm = cfg.get<boolean>('paste.confirmOnReplace', true);
+      if (confirm) {
+        const choice = await vscode.window.showWarningMessage(
+          'Graft: replace current content with clipboard?',
+          { modal: true },
+          'Replace',
+        );
+        if (choice !== 'Replace') return false;
+      }
     }
 
     await vscode.workspace.fs.writeFile(current, new TextEncoder().encode(text));
     await this.refresh();
     this.setStatus('ok', 'Pasted from clipboard.');
+    return true;
   }
 
   async cmdEdit(): Promise<void> {
@@ -246,33 +266,44 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
     await vscode.window.showTextDocument(uri);
   }
 
-  async cmdValidate(): Promise<void> {
+  private async validateCurrent(): Promise<boolean> {
     const uri = await this.resolveCurrent();
     if (!uri) {
       this.setStatus('error', 'No changes file selected.');
-      return;
+      return false;
     }
     let text: string;
     try {
       text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
     } catch (e) {
       this.setStatus('error', `Cannot read file: ${e instanceof Error ? e.message : String(e)}`);
-      return;
+      return false;
     }
     try {
       const ops = parseGraftFile(text, uri.fsPath);
       const n = ops.length;
       this.setStatus('ok', `OK, ${n} operation${n === 1 ? '' : 's'}.`);
+      return true;
     } catch (e) {
       if (e instanceof GraftParseError) {
         this.setStatus('error', e.message);
       } else {
         this.setStatus('error', `Unexpected error: ${e instanceof Error ? e.message : String(e)}`);
       }
+      return false;
     }
   }
 
+  async cmdValidate(): Promise<void> {
+    await this.validateCurrent();
+  }
+
   async cmdApply(): Promise<void> {
+    if (!(await this.validateCurrent())) return;
+    await this.doApply();
+  }
+
+  private async doApply(): Promise<void> {
     const uri = await this.resolveCurrent();
     if (!uri) {
       this.setStatus('error', 'No changes file selected.');
@@ -307,20 +338,24 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
     const previewCounts = dry.counts!;
     const failures = previewResults.filter((r) => r.status === 'failed');
 
-    let msg = `${previewResults.length} operation${previewResults.length === 1 ? '' : 's'} would be applied.`;
-    if (previewCounts.skipped > 0) {
-      msg += ` ${previewCounts.skipped} would be skipped (already applied).`;
-    }
-    if (failures.length > 0) {
-      msg += `\n\n${failures.length} would fail. First: ${failures[0].error ?? 'unknown error'}`;
-    }
+    const cfg = vscode.workspace.getConfiguration('graft');
+    const shouldConfirm = cfg.get<boolean>('apply.confirm', true);
 
-    const choice = await vscode.window.showWarningMessage(
-      msg,
-      { modal: true },
-      failures.length > 0 ? 'Apply anyway' : 'Apply',
-    );
-    if (!choice) return;
+    if (shouldConfirm) {
+      let msg = `${previewResults.length} operation${previewResults.length === 1 ? '' : 's'} would be applied.`;
+      if (previewCounts.skipped > 0) {
+        msg += ` ${previewCounts.skipped} would be skipped (already applied).`;
+      }
+      if (failures.length > 0) {
+        msg += `\n\n${failures.length} would fail. First: ${failures[0].error ?? 'unknown error'}`;
+      }
+      const choice = await vscode.window.showWarningMessage(
+        msg,
+        { modal: true },
+        failures.length > 0 ? 'Apply anyway' : 'Apply',
+      );
+      if (!choice) return;
+    }
 
     let real;
     try {
@@ -348,6 +383,14 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
       parts.join(' · ') + (real.recorded ? ' (recorded)' : ''),
     );
   }
+
+  async cmdApplyClipboard(): Promise<void> {
+    const pasted = await this.doPaste({ skipConfirm: true });
+    if (!pasted) return;
+    if (!(await this.validateCurrent())) return;
+    await this.doApply();
+  }
+
 
   private setStatus(kind: string, text: string): void {
     this.lastStatus = { kind, text };
@@ -392,23 +435,13 @@ function buildHtml(): string {
     height: 100vh;
     overflow: hidden;
   }
-  .path {
-    padding: 6px 10px;
-    font-size: 11px;
-    color: var(--vscode-descriptionForeground);
-    border-bottom: 1px solid var(--vscode-panel-border);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .toolbar, .actions {
+  .toolbar {
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
     padding: 6px 8px;
     border-bottom: 1px solid var(--vscode-panel-border);
   }
-  .actions { border-top: 1px solid var(--vscode-panel-border); border-bottom: none; }
   button {
     background: var(--vscode-button-secondaryBackground, #3a3d41);
     color: var(--vscode-button-secondaryForeground, #cccccc);
@@ -449,24 +482,20 @@ function buildHtml(): string {
 </style>
 </head>
 <body>
-  <div class="path" id="path">(no file)</div>
   <div class="toolbar">
-    <button data-cmd="new">New</button>
-    <button data-cmd="pick">Pick</button>
     <button data-cmd="paste">Paste</button>
     <button data-cmd="edit">Edit</button>
+    <button data-cmd="validate">Validate</button>
+    <button data-cmd="apply">Apply</button>
+    <button data-cmd="applyClipboard" class="primary">Apply Clipboard</button>
+
   </div>
   <div class="content empty" id="content">(no changes file)</div>
-  <div class="actions">
-    <button data-cmd="validate">Validate</button>
-    <button data-cmd="apply" class="primary">Apply</button>
-  </div>
   <div class="status" id="status"></div>
 
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const contentEl = document.getElementById('content');
-    const pathEl = document.getElementById('path');
     const statusEl = document.getElementById('status');
 
     document.querySelectorAll('button[data-cmd]').forEach(function (btn) {
@@ -478,7 +507,6 @@ function buildHtml(): string {
     window.addEventListener('message', function (e) {
       const m = e.data;
       if (m.type === 'content') {
-        pathEl.textContent = m.path || '(no file)';
         if (!m.text) {
           contentEl.textContent = '(no changes file)';
           contentEl.classList.add('empty');
