@@ -2,7 +2,9 @@
   "name": "graft-vscode",
   "displayName": "Graft",
   "description": "Apply .graft change files to your project",
-  "version": "0.5.0",
+  "version": "0.6.0",
+
+
   "private": true,
   "type": "module",
   "engines": {
@@ -138,7 +140,39 @@
           "type": "boolean",
           "default": true,
           "description": "Show a preview confirmation dialog before applying changes."
+        },
+        "graft.applyClipboard.confirm": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a preview confirmation dialog before applying changes from the clipboard."
+        },
+
+        "graft.ui.colors.patch": {
+          "type": "string",
+          "default": "",
+          "description": "Custom color for 'patch' operations (e.g. #00AAFF or var(--vscode-charts-blue))"
+        },
+        "graft.ui.colors.write": {
+          "type": "string",
+          "default": "",
+          "description": "Custom color for 'write' operations (e.g. #FFA500)"
+        },
+        "graft.ui.colors.delete": {
+          "type": "string",
+          "default": "",
+          "description": "Custom color for 'delete' operations (e.g. #FF0000)"
+        },
+        "graft.ui.colors.mkdir": {
+          "type": "string",
+          "default": "",
+          "description": "Custom color for 'mkdir' operations (e.g. #00FF00)"
+        },
+        "graft.ui.colors.rename": {
+          "type": "string",
+          "default": "",
+          "description": "Custom color for 'rename' operations (e.g. #AA00FF)"
         }
+
 
       }
     }

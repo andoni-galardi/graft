@@ -12,15 +12,15 @@ export class GraftParseError extends Error {
 }
 
 const ALLOWED_ATTRS: Record<string, readonly string[]> = {
-  mkdir: ['path'],
-  delete: ['path', 'recursive'],
-  write: ['path', 'encoding'],
-  rename: ['path', 'to'],
-  copy: ['path', 'to'],
-  append: ['path'],
-  prepend: ['path'],
-  'insert-after': ['path', 'anchor', 'match', 'inline'],
-  'insert-before': ['path', 'anchor', 'match', 'inline'],
+  mkdir: ['path', 'description'],
+  delete: ['path', 'recursive', 'description'],
+  write: ['path', 'encoding', 'description'],
+  rename: ['path', 'to', 'description'],
+  copy: ['path', 'to', 'description'],
+  append: ['path', 'description'],
+  prepend: ['path', 'description'],
+  'insert-after': ['path', 'anchor', 'match', 'inline', 'description'],
+  'insert-before': ['path', 'anchor', 'match', 'inline', 'description'],
   patch: [
     'path',
     'match',
@@ -32,8 +32,10 @@ const ALLOWED_ATTRS: Record<string, readonly string[]> = {
     'all',
     'word',
     'lines',
+    'description',
   ],
 };
+
 
 const ALLOWED_BLOCKS: Record<string, readonly string[]> = {
   mkdir: [],
@@ -267,42 +269,43 @@ function buildOperation(raw: RawOperation, filename?: string): Operation {
   if (!path) {
     throw new GraftParseError(`operation '${opName}' requires 'path'`, L, filename);
   }
+  const description = attrs['description'];
 
   switch (opName) {
     case 'mkdir':
-      return { op: 'mkdir', path };
+      return { op: 'mkdir', path, description };
 
     case 'delete': {
       const recursive =
         attrs['recursive'] !== undefined
           ? parseBool(attrs['recursive'], 'recursive', L, filename)
           : false;
-      return { op: 'delete', path, recursive };
+      return { op: 'delete', path, recursive, description };
     }
 
     case 'write': {
       const content = requireBlock(blocks, 'CONTENT', 'write', L, filename);
-      return { op: 'write', path, content, encoding: attrs['encoding'] };
+      return { op: 'write', path, content, encoding: attrs['encoding'], description };
     }
 
     case 'rename': {
       const to = requireAttr(attrs, 'to', 'rename', L, filename);
-      return { op: 'rename', path, to };
+      return { op: 'rename', path, to, description };
     }
 
     case 'copy': {
       const to = requireAttr(attrs, 'to', 'copy', L, filename);
-      return { op: 'copy', path, to };
+      return { op: 'copy', path, to, description };
     }
 
     case 'append': {
       const content = requireBlock(blocks, 'CONTENT', 'append', L, filename);
-      return { op: 'append', path, content };
+      return { op: 'append', path, content, description };
     }
 
     case 'prepend': {
       const content = requireBlock(blocks, 'CONTENT', 'prepend', L, filename);
-      return { op: 'prepend', path, content };
+      return { op: 'prepend', path, content, description };
     }
 
     case 'insert-after': {
@@ -313,7 +316,7 @@ function buildOperation(raw: RawOperation, filename?: string): Operation {
         attrs['inline'] !== undefined
           ? parseBool(attrs['inline'], 'inline', L, filename)
           : undefined;
-      return { op: 'insert-after', path, anchor, content, match, inline };
+      return { op: 'insert-after', path, anchor, content, match, inline, description };
     }
 
     case 'insert-before': {
@@ -324,10 +327,11 @@ function buildOperation(raw: RawOperation, filename?: string): Operation {
         attrs['inline'] !== undefined
           ? parseBool(attrs['inline'], 'inline', L, filename)
           : undefined;
-      return { op: 'insert-before', path, anchor, content, match, inline };
+      return { op: 'insert-before', path, anchor, content, match, inline, description };
     }
 
     case 'patch': {
+
       const linesAttr = attrs['lines'];
       const scopeAfter = attrs['scope-after'];
       const scopeBefore = attrs['scope-before'];
@@ -375,7 +379,8 @@ function buildOperation(raw: RawOperation, filename?: string): Operation {
             filename,
           );
         }
-        return { op: 'patch', path, mode: 'lines', from, to, content };
+        return { op: 'patch', path, mode: 'lines', from, to, content, description };
+
       }
 
       const match = parseMatchMode(attrs['match'], L, filename);
@@ -435,7 +440,9 @@ function buildOperation(raw: RawOperation, filename?: string): Operation {
         first,
         all,
         word,
+        description,
       };
+
     }
 
     default:

@@ -1,9 +1,10 @@
 import * as vscode from 'vscode';
 import {
   applyGraftFile,
-  parseGraftFile,
   GraftParseError,
+  ApplyFileResult,
 } from '@andoni.galardi/graft';
+
 import { getWorkspaceRoot, getGraftDirUri, getDefaultGraftUri } from './paths.js';
 import { TEMPLATE } from './template.js';
 
@@ -20,11 +21,20 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
     this.views.add(view);
     view.onDidDispose(() => this.views.delete(view));
 
-    // Show the current file path on the same line as the view title (Timeline style).
     view.description = this.lastContent?.path ?? undefined;
-
     view.webview.options = { enableScripts: true };
-    view.webview.html = buildHtml();
+    
+    const cfg = vscode.workspace.getConfiguration('graft');
+    const colors = {
+      patch: cfg.get<string>('ui.colors.patch') || 'var(--vscode-charts-blue)',
+      write: cfg.get<string>('ui.colors.write') || 'var(--vscode-charts-orange)',
+      delete: cfg.get<string>('ui.colors.delete') || 'var(--vscode-charts-red)',
+      mkdir: cfg.get<string>('ui.colors.mkdir') || 'var(--vscode-charts-green)',
+      rename: cfg.get<string>('ui.colors.rename') || 'var(--vscode-charts-purple)',
+    };
+
+    view.webview.html = buildHtml(colors);
+
 
     view.webview.onDidReceiveMessage((msg: { type?: string }) => {
       switch (msg.type) {
@@ -52,7 +62,6 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
         case 'applyClipboard':
           void this.cmdApplyClipboard();
           break;
-
       }
     });
 
@@ -65,11 +74,6 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
       return;
     }
     view.description = this.lastContent.path ?? undefined;
-    void view.webview.postMessage({
-      type: 'content',
-      path: this.lastContent.path,
-      text: this.lastContent.text,
-    });
     if (this.lastStatus) {
       void view.webview.postMessage({
         type: 'status',
@@ -77,6 +81,7 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
         text: this.lastStatus.text,
       });
     }
+    await this.refreshTable();
   }
 
   async refresh(): Promise<void> {
@@ -85,13 +90,9 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
     for (const v of this.views) {
       v.description = displayPath || undefined;
     }
-    if (this.views.size === 0) return;
-    this.broadcast({
-      type: 'content',
-      path: this.lastContent!.path,
-      text: this.lastContent!.text,
-    });
+    await this.refreshTable();
   }
+
 
   private async computeContent(): Promise<void> {
     const uri = await this.resolveCurrent();
@@ -115,6 +116,46 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
       text,
     };
   }
+
+  private async refreshTable(): Promise<void> {
+    try {
+      const uri = await this.resolveCurrent();
+      const root = getWorkspaceRoot();
+      if (!uri || !root) {
+        this.broadcast({ type: 'operations', ops: [], parseError: null });
+        return;
+      }
+      const dry = await applyGraftFile(uri.fsPath, { cwd: root.fsPath, dryRun: true });
+      this.broadcastOps(dry);
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.stack || e.message : String(e);
+      console.error('[Graft] Error in refreshTable:', errorMsg);
+      this.broadcast({ type: 'operations', parseError: 'Internal Error: ' + errorMsg, ops: [] });
+    }
+  }
+
+  private broadcastOps(result: ApplyFileResult, isDryRun: boolean = true) {
+    const payload: any = { type: 'operations', ops: [], isDryRun };
+
+    if (result.parseError) {
+      payload.parseError = result.parseError.message;
+    } else if (result.readError) {
+      payload.parseError = 'Cannot read file: ' + result.readError;
+    } else if (result.alreadyApplied) {
+      payload.globalMessage = 'Already applied on ' + (result.appliedRecord?.appliedAt || 'unknown');
+    } else {
+      payload.ops = (result.results || []).map(r => ({
+        op: r.op.op,
+        path: r.op.path,
+        description: (r.op as any).description || '',
+        status: r.status,
+        error: r.error || r.reason || ''
+      }));
+    }
+    this.broadcast(payload);
+  }
+
+
 
   async resolveCurrent(): Promise<vscode.Uri | undefined> {
     if (this.currentUri) {
@@ -175,9 +216,9 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
     this.currentUri = fileUri;
     await this.refresh();
     if (exists) {
-      this.setStatus('info', `${name.trim()} already exists. Opened.`);
+      this.setStatus('info', name.trim() + ' already exists. Opened.');
     } else {
-      this.setStatus('ok', `Created .graft/${name.trim()}.`);
+      this.setStatus('ok', 'Created .graft/' + name.trim() + '.');
     }
   }
 
@@ -266,44 +307,39 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
     await vscode.window.showTextDocument(uri);
   }
 
-  private async validateCurrent(): Promise<boolean> {
+  async cmdValidate(): Promise<void> {
     const uri = await this.resolveCurrent();
     if (!uri) {
       this.setStatus('error', 'No changes file selected.');
-      return false;
+      return;
     }
-    let text: string;
-    try {
-      text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
-    } catch (e) {
-      this.setStatus('error', `Cannot read file: ${e instanceof Error ? e.message : String(e)}`);
-      return false;
+    const root = getWorkspaceRoot();
+    if (!root) return;
+
+    const dry = await applyGraftFile(uri.fsPath, { cwd: root.fsPath, dryRun: true });
+    if (dry.parseError) {
+      this.setStatus('error', dry.parseError.message);
+      this.broadcastOps(dry);
+      return;
     }
-    try {
-      const ops = parseGraftFile(text, uri.fsPath);
-      const n = ops.length;
-      this.setStatus('ok', `OK, ${n} operation${n === 1 ? '' : 's'}.`);
-      return true;
-    } catch (e) {
-      if (e instanceof GraftParseError) {
-        this.setStatus('error', e.message);
-      } else {
-        this.setStatus('error', `Unexpected error: ${e instanceof Error ? e.message : String(e)}`);
-      }
-      return false;
+    if (dry.readError) {
+      this.setStatus('error', 'Cannot read file: ' + dry.readError);
+      return;
     }
+
+    const count = dry.results?.length || 0;
+    const failures = dry.results?.filter(r => r.status === 'failed') || [];
+    if (failures.length > 0) {
+      this.setStatus('error', failures.length + ' operation(s) would fail.');
+    } else {
+      this.setStatus('ok', 'OK, ' + count + ' operation' + (count === 1 ? '' : 's') + '.');
+    }
+    this.broadcastOps(dry);
   }
 
-  async cmdValidate(): Promise<void> {
-    await this.validateCurrent();
-  }
 
-  async cmdApply(): Promise<void> {
-    if (!(await this.validateCurrent())) return;
-    await this.doApply();
-  }
+  async cmdApply(shouldConfirmOverride?: boolean): Promise<void> {
 
-  private async doApply(): Promise<void> {
     const uri = await this.resolveCurrent();
     if (!uri) {
       this.setStatus('error', 'No changes file selected.');
@@ -322,32 +358,38 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
     try {
       dry = await applyGraftFile(graftPath, { cwd, dryRun: true });
     } catch (e) {
-      this.setStatus('error', `Apply failed: ${e instanceof Error ? e.message : String(e)}`);
+      this.setStatus('error', 'Apply failed: ' + (e instanceof Error ? e.message : String(e)));
       return;
     }
     if (dry.readError) {
-      this.setStatus('error', `Cannot read file: ${dry.readError}`);
+      this.setStatus('error', 'Cannot read file: ' + dry.readError);
       return;
     }
     if (dry.parseError) {
       this.setStatus('error', dry.parseError.message);
+      this.broadcastOps(dry);
       return;
     }
+
+    this.broadcastOps(dry);
 
     const previewResults = dry.results ?? [];
     const previewCounts = dry.counts!;
     const failures = previewResults.filter((r) => r.status === 'failed');
 
     const cfg = vscode.workspace.getConfiguration('graft');
-    const shouldConfirm = cfg.get<boolean>('apply.confirm', true);
+    const shouldConfirm = shouldConfirmOverride !== undefined 
+      ? shouldConfirmOverride 
+      : cfg.get<boolean>('apply.confirm', true);
 
     if (shouldConfirm) {
-      let msg = `${previewResults.length} operation${previewResults.length === 1 ? '' : 's'} would be applied.`;
+
+      let msg = previewResults.length + ' operation' + (previewResults.length === 1 ? '' : 's') + ' would be applied.';
       if (previewCounts.skipped > 0) {
-        msg += ` ${previewCounts.skipped} would be skipped (already applied).`;
+        msg += ' ' + previewCounts.skipped + ' would be skipped (already applied).';
       }
       if (failures.length > 0) {
-        msg += `\n\n${failures.length} would fail. First: ${failures[0].error ?? 'unknown error'}`;
+        msg += '\n\n' + failures.length + ' would fail. First: ' + (failures[0].error ?? 'unknown error');
       }
       const choice = await vscode.window.showWarningMessage(
         msg,
@@ -361,35 +403,43 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
     try {
       real = await applyGraftFile(graftPath, { cwd });
     } catch (e) {
-      this.setStatus('error', `Apply failed: ${e instanceof Error ? e.message : String(e)}`);
+      this.setStatus('error', 'Apply failed: ' + (e instanceof Error ? e.message : String(e)));
       return;
     }
     if (real.alreadyApplied && real.appliedRecord) {
-      this.setStatus('info', `Already applied on ${real.appliedRecord.appliedAt}.`);
+      this.setStatus('info', 'Already applied on ' + real.appliedRecord.appliedAt + '.');
+      this.broadcastOps(real, false);
       return;
     }
     if (real.parseError) {
       this.setStatus('error', real.parseError.message);
+      this.broadcastOps(real, false);
       return;
     }
 
+
     const c = real.counts!;
     const parts: string[] = [];
-    if (c.ok) parts.push(`${c.ok} ok`);
-    if (c.skipped) parts.push(`${c.skipped} skipped`);
-    if (c.failed) parts.push(`${c.failed} failed`);
+    if (c.ok) parts.push(c.ok + ' ok');
+    if (c.skipped) parts.push(c.skipped + ' skipped');
+    if (c.failed) parts.push(c.failed + ' failed');
     this.setStatus(
       c.failed > 0 ? 'error' : 'ok',
       parts.join(' · ') + (real.recorded ? ' (recorded)' : ''),
     );
+    this.broadcastOps(real, false);
   }
+
+
 
   async cmdApplyClipboard(): Promise<void> {
     const pasted = await this.doPaste({ skipConfirm: true });
     if (!pasted) return;
-    if (!(await this.validateCurrent())) return;
-    await this.doApply();
+    const cfg = vscode.workspace.getConfiguration('graft');
+    const shouldConfirm = cfg.get<boolean>('applyClipboard.confirm', true);
+    await this.cmdApply(shouldConfirm);
   }
+
 
 
   private setStatus(kind: string, text: string): void {
@@ -411,13 +461,21 @@ function makeNonce(): string {
   return s;
 }
 
-function buildHtml(): string {
+function buildHtml(colors: Record<string, string>): string {
   const nonce = makeNonce();
   const csp = [
-    `default-src 'none'`,
-    `style-src 'unsafe-inline'`,
-    `script-src 'nonce-${nonce}'`,
+    "default-src 'none'",
+    "style-src 'unsafe-inline'",
+    "script-src 'nonce-" + nonce + "'",
   ].join('; ');
+
+  const colorVars = [
+    `--graft-color-patch: ${colors.patch};`,
+    `--graft-color-write: ${colors.write};`,
+    `--graft-color-delete: ${colors.delete};`,
+    `--graft-color-mkdir: ${colors.mkdir};`,
+    `--graft-color-rename: ${colors.rename};`
+  ].join('\n');
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -425,6 +483,10 @@ function buildHtml(): string {
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <style>
+  :root {
+    ${colorVars}
+  }
+
   body {
     font-family: var(--vscode-font-family);
     color: var(--vscode-foreground);
@@ -458,17 +520,76 @@ function buildHtml(): string {
     color: var(--vscode-button-foreground);
   }
   button.primary:hover { background: var(--vscode-button-hoverBackground); }
-  .content {
+  .table-container {
     flex: 1;
     overflow: auto;
-    padding: 8px 10px;
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: var(--vscode-editor-font-size, 12px);
-    white-space: pre;
-    line-height: 1.4;
-    min-height: 60px;
+    padding: 0;
   }
-  .content.empty { color: var(--vscode-descriptionForeground); font-style: italic; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    text-align: left;
+    font-size: 12px;
+    table-layout: fixed;
+  }
+  th, td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--vscode-panel-border);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  th {
+    font-weight: 600;
+    color: var(--vscode-descriptionForeground);
+    position: sticky;
+    top: 0;
+    background: var(--vscode-editor-background);
+    z-index: 1;
+  }
+  tbody tr:hover { background: var(--vscode-list-hoverBackground); cursor: pointer; }
+  .empty-row {
+    text-align: center;
+    font-style: italic;
+    color: var(--vscode-descriptionForeground);
+  }
+  
+  /* Operation colors */
+  .op-mkdir { color: var(--graft-color-mkdir); font-weight: 600; }
+  .op-delete { color: var(--graft-color-delete); font-weight: 600; }
+  .op-write { color: var(--graft-color-write); font-weight: 600; }
+  .op-patch { color: var(--graft-color-patch); font-weight: 600; }
+  .op-rename { color: var(--graft-color-rename); font-weight: 600; }
+  .op-copy { color: var(--vscode-charts-yellow); font-weight: 600; }
+  .op-append, .op-prepend, .op-insert-after, .op-insert-before { color: var(--vscode-charts-foreground); font-weight: 600; }
+
+
+  /* Status colors */
+  .status-ok { color: var(--vscode-testing-iconPassed); }
+  .status-failed { color: var(--vscode-testing-iconFailed); }
+  .status-skipped { color: var(--vscode-descriptionForeground); }
+  .status-would-apply { color: var(--vscode-foreground); }
+
+  /* Details row */
+  .details-row { display: none; }
+  .details-row.expanded { display: table-row; }
+  .details-content {
+    background: var(--vscode-editor-background);
+    padding: 8px 10px 8px 20px;
+    border-bottom: 1px solid var(--vscode-panel-border);
+    border-left: 3px solid var(--vscode-panel-border);
+    white-space: pre-wrap;
+    word-break: break-all;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11px;
+    line-height: 1.6;
+  }
+  .details-content .label { font-weight: 600; color: var(--vscode-descriptionForeground); user-select: none; }
+  .details-content .error-text { color: var(--vscode-errorForeground); }
+  .details-content .error-text .label { color: var(--vscode-errorForeground); }
+  .details-content .desc-text { color: var(--vscode-foreground); font-style: italic; }
+
+
   .status {
     padding: 6px 10px;
     border-top: 1px solid var(--vscode-panel-border);
@@ -488,14 +609,26 @@ function buildHtml(): string {
     <button data-cmd="validate">Validate</button>
     <button data-cmd="apply">Apply</button>
     <button data-cmd="applyClipboard" class="primary">Apply Clipboard</button>
-
   </div>
-  <div class="content empty" id="content">(no changes file)</div>
+  <div class="table-container">
+    <table id="ops-table">
+      <thead>
+        <tr>
+          <th style="width: 120px;">Action</th>
+          <th style="width: auto;">File</th>
+          <th style="width: 100px;">Status</th>
+        </tr>
+      </thead>
+      <tbody id="ops-body">
+        <tr><td colspan="3" class="empty-row">(no changes file)</td></tr>
+      </tbody>
+    </table>
+  </div>
   <div class="status" id="status"></div>
 
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
-    const contentEl = document.getElementById('content');
+    const opsBody = document.getElementById('ops-body');
     const statusEl = document.getElementById('status');
 
     document.querySelectorAll('button[data-cmd]').forEach(function (btn) {
@@ -504,25 +637,113 @@ function buildHtml(): string {
       });
     });
 
+    function formatStatus(status, isDryRun) {
+      if (status === 'would-apply') return 'Ready';
+      if (status === 'ok') return 'Applied';
+      if (status === 'skipped') return 'Skipped';
+      if (status === 'failed') return isDryRun ? 'Will fail' : 'Failed';
+      return status;
+    }
+
+
+    function shortPath(path) {
+      if (!path || path.length < 35) return path;
+      const parts = path.split('/');
+      if (parts.length <= 2) return path;
+      const file = parts.pop();
+      const start = parts[0];
+      if (start === '.') return '.../' + file;
+      return start + '/.../' + file;
+    }
+
+    function renderOperations(data) {
+      opsBody.innerHTML = '';
+      
+      if (data.globalMessage) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td colspan="3" class="empty-row" style="color: var(--vscode-testing-iconPassed);">' + data.globalMessage + '</td>';
+        opsBody.appendChild(tr);
+        return;
+      }
+
+      if (data.parseError) {
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td colspan="3" class="status-failed" style="font-weight:bold;">Syntax Error: ' + data.parseError + '</td>';
+        opsBody.appendChild(tr);
+        return;
+      }
+
+      if (!data.ops || data.ops.length === 0) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td colspan="3" class="empty-row">(no operations)</td>';
+        opsBody.appendChild(tr);
+        return;
+      }
+
+      data.ops.forEach(function(op) {
+        const tr = document.createElement('tr');
+        
+        const actionTd = document.createElement('td');
+        actionTd.className = 'op-' + op.op;
+        actionTd.textContent = op.op;
+        
+        const pathTd = document.createElement('td');
+        pathTd.textContent = shortPath(op.path);
+        pathTd.title = op.path;
+        pathTd.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
+        
+        const statusTd = document.createElement('td');
+        statusTd.className = 'status-' + op.status;
+        statusTd.textContent = formatStatus(op.status, data.isDryRun);
+
+        
+        tr.appendChild(actionTd);
+        tr.appendChild(pathTd);
+        tr.appendChild(statusTd);
+        
+        // Details row for ALL operations
+        const detTr = document.createElement('tr');
+        detTr.className = 'details-row';
+        const detTd = document.createElement('td');
+        detTd.colSpan = 3;
+        
+        let html = '<div class="details-content">';
+        html += '<div><span class="label">Full path:</span> ' + op.path + '</div>';
+        if (op.description) {
+          html += '<div><span class="label">Description:</span> <span class="desc-text">' + op.description + '</span></div>';
+        }
+        if (op.error) {
+          html += '<div class="error-text"><span class="label">Error:</span> ' + op.error + '</div>';
+        }
+        html += '</div>';
+        
+        detTd.innerHTML = html;
+        detTr.appendChild(detTd);
+        
+        tr.addEventListener('dblclick', function() {
+          detTr.classList.toggle('expanded');
+        });
+        tr.title = 'Double click to show details';
+        
+        opsBody.appendChild(tr);
+        opsBody.appendChild(detTr);
+      });
+    }
+
     window.addEventListener('message', function (e) {
       const m = e.data;
-      if (m.type === 'content') {
-        if (!m.text) {
-          contentEl.textContent = '(no changes file)';
-          contentEl.classList.add('empty');
-        } else {
-          contentEl.textContent = m.text;
-          contentEl.classList.remove('empty');
-        }
+      if (m.type === 'operations') {
+        renderOperations(m);
       } else if (m.type === 'status') {
         statusEl.textContent = m.text;
         statusEl.className = 'status ' + (m.kind || '');
       }
     });
 
-    // Handshake: tell the extension we are ready to receive content.
     vscode.postMessage({ type: 'ready' });
   </script>
 </body>
 </html>`;
 }
+

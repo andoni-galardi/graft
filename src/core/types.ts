@@ -7,7 +7,11 @@ export interface Scope {
   beforeLine?: number;
 }
 
-export interface PatchFindOperation {
+export interface OperationBase {
+  description?: string;
+}
+
+export interface PatchFindOperation extends OperationBase {
   op: 'patch';
   path: string;
   mode: 'find';
@@ -20,7 +24,7 @@ export interface PatchFindOperation {
   word?: boolean;
 }
 
-export interface PatchLinesOperation {
+export interface PatchLinesOperation extends OperationBase {
   op: 'patch';
   path: string;
   mode: 'lines';
@@ -29,31 +33,31 @@ export interface PatchLinesOperation {
   content: string;
 }
 
-export interface RenameOperation {
+export interface RenameOperation extends OperationBase {
   op: 'rename';
   path: string;
   to: string;
 }
 
-export interface CopyOperation {
+export interface CopyOperation extends OperationBase {
   op: 'copy';
   path: string;
   to: string;
 }
 
-export interface AppendOperation {
+export interface AppendOperation extends OperationBase {
   op: 'append';
   path: string;
   content: string;
 }
 
-export interface PrependOperation {
+export interface PrependOperation extends OperationBase {
   op: 'prepend';
   path: string;
   content: string;
 }
 
-export interface InsertAfterOperation {
+export interface InsertAfterOperation extends OperationBase {
   op: 'insert-after';
   path: string;
   anchor: string;
@@ -62,7 +66,7 @@ export interface InsertAfterOperation {
   inline?: boolean;
 }
 
-export interface InsertBeforeOperation {
+export interface InsertBeforeOperation extends OperationBase {
   op: 'insert-before';
   path: string;
   anchor: string;
@@ -72,9 +76,9 @@ export interface InsertBeforeOperation {
 }
 
 export type Operation =
-  | { op: 'mkdir'; path: string }
-  | { op: 'delete'; path: string; recursive: boolean }
-  | { op: 'write'; path: string; content: string; encoding?: string }
+  | ({ op: 'mkdir'; path: string } & OperationBase)
+  | ({ op: 'delete'; path: string; recursive: boolean } & OperationBase)
+  | ({ op: 'write'; path: string; content: string; encoding?: string } & OperationBase)
   | RenameOperation
   | CopyOperation
   | AppendOperation
@@ -83,6 +87,7 @@ export type Operation =
   | InsertBeforeOperation
   | PatchFindOperation
   | PatchLinesOperation;
+
 
 export type OperationStatus = 'ok' | 'skipped' | 'failed' | 'would-apply';
 

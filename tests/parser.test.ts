@@ -2,6 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { GraftParseError, parseGraftFile } from '../src/core/parser.js';
 
 describe('parseGraftFile', () => {
+  it('parses the description attribute', () => {
+    const src = '[op: mkdir]\npath: foo\ndescription: Create foo directory\n';
+    const ops = parseGraftFile(src);
+    expect(ops[0].description).toBe('Create foo directory');
+  });
+
   it('devuelve [] para archivo vacío', () => {
     expect(parseGraftFile('')).toEqual([]);
   });
