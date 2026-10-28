@@ -445,7 +445,16 @@ function describeOp(r: OperationResult): string {
       return op.mode === 'lines'
         ? `patch ${op.path} (lines ${op.from}..${op.to})`
         : `patch ${op.path}`;
+    case 'read':
+      return op.from !== undefined && op.to !== undefined
+        ? `read ${op.path} (lines ${op.from}..${op.to})`
+        : `read ${op.path}`;
+    case 'search':
+      return `search ${op.path} (pattern: ${op.pattern})`;
+    case 'list':
+      return `list ${op.path}`;
     default: {
+
       const exhaustive: never = op;
       return String((exhaustive as { op: string }).op);
     }

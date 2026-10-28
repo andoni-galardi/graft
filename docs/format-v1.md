@@ -131,7 +131,26 @@ Modifies an existing file. Two modes.
 - `lines`: `N..M` (required, 1-based, inclusive on both ends)
 - Block: `CONTENT` (required)
 
+### read
+Reads a file and outputs its content, optionally restricted to a line range.
+- `path` (required)
+- `lines` (optional, `N..M`, 1-based inclusive)
+
+### search
+Searches for a pattern in files. The path may contain globs.
+- `path` (required)
+- `pattern` (required)
+- `match`: `exact` | `normalized` | `regex` (default `exact`)
+- `context` (optional, number of surrounding lines to show)
+
+### list
+Lists the contents of a directory.
+- `path` (required)
+- `extensions` (optional, comma-separated list, e.g. `.ts, .js`)
+- `exclude` (optional, comma-separated list of directory or file names)
+
 ## Examples
+
 
     [op: mkdir]
     path: src/components
@@ -188,6 +207,19 @@ Modifies an existing file. Two modes.
     const TIMEOUT = 5000;
     CONTENT>>>
 
+    [op: read]
+    path: src/index.ts
+    lines: 10..20
+
+    [op: search]
+    path: src/**/*.ts
+    pattern: TODO
+
+    [op: list]
+    path: src/
+    extensions: .ts, .js
+
+
 ## Errors
 
 The parser stops at the first error and reports `file:line: reason`.
@@ -241,6 +273,10 @@ No markdown fences, no commentary, no leading/trailing prose.
   function) → `[op: insert-before]`.
 - Rename or move a file → `[op: rename]`.
 - Duplicate a file → `[op: copy]`.
+- Query file contents → `[op: read]`.
+- Search for text across files → `[op: search]`.
+- List directory contents → `[op: list]`.
+
 
 **How to write a `patch` operation**:
 

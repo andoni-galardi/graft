@@ -1,6 +1,7 @@
 {
   "name": "@andoni.galardi/graft",
-  "version": "0.6.0",
+  "version": "0.7.0",
+
 
 
   "description": "Soft patching tool: apply flexible, LLM-friendly change files to a project",

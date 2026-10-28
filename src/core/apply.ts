@@ -10,7 +10,9 @@ import type {
   ApplyFileResult,
   ApplyOptions,
   AppliedRecord,
+  Operation,
   OperationResult,
+
   OperationStatus,
 } from './types.js';
 
@@ -80,7 +82,8 @@ export async function applyGraftFile(
   const counts = countByStatus(results);
 
   let recorded = false;
-  if (!options.dryRun && counts.failed === 0) {
+  if (!options.dryRun && counts.failed === 0 && hasModifications(ops)) {
+
     const newRecord: AppliedRecord = {
       appliedAt: new Date().toISOString(),
       hash,
@@ -101,4 +104,10 @@ export async function applyGraftFile(
     counts,
     recorded,
   };
+}
+function hasModifications(ops: Operation[]): boolean {
+  for (const op of ops) {
+    if (op.op !== 'read' && op.op !== 'search' && op.op !== 'list') return true;
+  }
+  return false;
 }

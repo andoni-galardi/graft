@@ -6,12 +6,16 @@ import type {
   CopyOperation,
   InsertAfterOperation,
   InsertBeforeOperation,
+  ListOperation,
   Operation,
   OperationResult,
   PatchFindOperation,
   PatchLinesOperation,
+  ReadOperation,
   RenameOperation,
+  SearchOperation,
 } from './types.js';
+
 
 interface Ctx {
   cwd: string;
@@ -42,10 +46,18 @@ export async function applyOperations(
   };
 
   const results: OperationResult[] = [];
+  let aborted = false;
   for (const op of ops) {
-    results.push(await applyOperation(op, ctx));
+    if (aborted) {
+      results.push({ op, status: 'skipped', reason: 'skipped (previous failure)' });
+      continue;
+    }
+    const r = await applyOperation(op, ctx);
+    results.push(r);
+    if (!ctx.dryRun && r.status === 'failed') aborted = true;
   }
   return results;
+
 }
 
 async function applyOperation(op: Operation, ctx: Ctx): Promise<OperationResult> {
@@ -71,8 +83,15 @@ async function applyOperation(op: Operation, ctx: Ctx): Promise<OperationResult>
         return await applyInsert(op, ctx, 'before');
       case 'patch':
         return await applyPatch(op, ctx);
+      case 'read':
+        return await applyRead(op, ctx);
+      case 'search':
+        return await applySearch(op, ctx);
+      case 'list':
+        return await applyList(op, ctx);
     }
   } catch (e) {
+
     return {
       op,
       status: 'failed',
@@ -544,13 +563,31 @@ async function isDirectoryAt(abs: string, ctx: Ctx): Promise<boolean> {
 }
 
 async function listDirAt(abs: string, ctx: Ctx): Promise<string[]> {
-  const onDisk = (await pathExists(abs)) ? await fs.readdir(abs) : [];
-  const extra = new Set<string>(onDisk);
-  for (const f of ctx.virtualFiles.keys()) {
-    if (path.dirname(f) === abs) extra.add(path.basename(f));
+  if (isUnderDeleted(abs, ctx)) return [];
+
+  const set = new Set<string>();
+
+  if (await pathExists(abs)) {
+    try {
+      for (const name of await fs.readdir(abs)) set.add(name);
+    } catch {
+      /* not a directory on disk */
+    }
   }
-  return Array.from(extra);
+
+  for (const f of ctx.virtualFiles.keys()) {
+    if (path.dirname(f) === abs) set.add(path.basename(f));
+  }
+  for (const d of ctx.createdDirs) {
+    if (path.dirname(d) === abs) set.add(path.basename(d));
+  }
+  for (const d of ctx.deletedPaths) {
+    if (path.dirname(d) === abs) set.delete(path.basename(d));
+  }
+
+  return Array.from(set).sort();
 }
+
 
 async function writeFileAt(abs: string, content: string, ctx: Ctx): Promise<void> {
   if (ctx.dryRun) {
@@ -635,6 +672,217 @@ function splitLinesWithOffsets(text: string): {
   lines.push(text.slice(start));
   offsets.push(start);
   return { lines, offsets };
+}
+
+function normalizeWS(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+function globBase(pattern: string): string {
+  const parts = pattern.split('/');
+  const base: string[] = [];
+  for (const p of parts) {
+    if (p.includes('*') || p.includes('?')) break;
+    base.push(p);
+  }
+  return base.join('/');
+}
+
+function globToRegex(pattern: string): RegExp {
+  let re = '^';
+  let i = 0;
+  while (i < pattern.length) {
+    const c = pattern[i];
+    if (c === '*') {
+      if (pattern[i + 1] === '*') {
+        if (pattern[i + 2] === '/') {
+          re += '(?:[^/]+/)*';
+          i += 3;
+        } else {
+          re += '.*';
+          i += 2;
+        }
+      } else {
+        re += '[^/]*';
+        i++;
+      }
+    } else if (c === '?') {
+      re += '[^/]';
+      i++;
+    } else if (/[a-zA-Z0-9_\-/]/.test(c)) {
+      re += c;
+      i++;
+    } else {
+      re += '\\' + c;
+      i++;
+    }
+  }
+  re += '$';
+  return new RegExp(re);
+}
+
+const SEARCH_SKIP = new Set(['node_modules', '.git', '.graft']);
+
+async function walkTree(abs: string, ctx: Ctx): Promise<string[]> {
+  const results: string[] = [];
+  for (const name of await listDirAt(abs, ctx)) {
+    if (SEARCH_SKIP.has(name)) continue;
+    const child = path.join(abs, name);
+    if (await isDirectoryAt(child, ctx)) results.push(...await walkTree(child, ctx));
+    else results.push(child);
+  }
+  return results;
+}
+
+async function collectFiles(ctx: Ctx, pathAttr: string): Promise<string[]> {
+  const hasGlob = pathAttr.includes('*') || pathAttr.includes('?');
+  if (hasGlob) {
+    const base = globBase(pathAttr) || '.';
+    const baseAbs = path.join(ctx.cwd, base);
+    const re = globToRegex(pathAttr);
+    const out: string[] = [];
+    for (const f of await walkTree(baseAbs, ctx)) {
+      const rel = path.relative(ctx.cwd, f).replace(/\\/g, '/');
+      if (re.test(rel)) out.push(f);
+    }
+    return out;
+  }
+  const abs = path.join(ctx.cwd, pathAttr);
+  if (!await fileExistsAt(abs, ctx)) return [];
+  if (await isDirectoryAt(abs, ctx)) return walkTree(abs, ctx);
+  return [abs];
+}
+
+async function applyRead(op: ReadOperation, ctx: Ctx): Promise<OperationResult> {
+  const abs = path.join(ctx.cwd, op.path);
+  if (!await fileExistsAt(abs, ctx)) {
+    return { op, status: 'failed', error: `file not found: ${op.path}` };
+  }
+  if (await isDirectoryAt(abs, ctx)) {
+    return { op, status: 'failed', error: `path is a directory: ${op.path}` };
+  }
+
+  const content = await readFileAt(abs, ctx);
+  const lines = content.split('\n');
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+
+  let from: number, to: number;
+  if (op.from !== undefined && op.to !== undefined) {
+    from = op.from;
+    to = op.to;
+    if (from > lines.length || to > lines.length) {
+      return {
+        op, status: 'failed',
+        error: `lines ${from}..${to} out of range (file has ${lines.length} lines)`,
+      };
+    }
+  } else {
+    from = 1;
+    to = lines.length;
+  }
+
+  const width = String(to).length;
+  const out: string[] = [];
+  for (let i = from; i <= to; i++) {
+    out.push(`${String(i).padStart(width, ' ')}: ${lines[i - 1] ?? ''}`);
+  }
+  return { op, status: 'ok', output: out.join('\n') };
+}
+
+async function applySearch(op: SearchOperation, ctx: Ctx): Promise<OperationResult> {
+  let regex: RegExp | undefined;
+  if (op.match === 'regex') {
+    try { regex = new RegExp(op.pattern); }
+    catch (e) {
+      return { op, status: 'failed', error: `invalid regex: ${(e as Error).message}` };
+    }
+  }
+
+  const files = await collectFiles(ctx, op.path);
+  const c = op.context ?? 0;
+  const out: string[] = [];
+  let total = 0;
+
+  for (const abs of files) {
+    let content: string;
+    try { content = await readFileAt(abs, ctx); } catch { continue; }
+    const lines = content.split('\n');
+    if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+
+    const hits: number[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      let hit: boolean;
+      if (regex) hit = regex.test(line);
+      else if (op.match === 'normalized') hit = normalizeWS(line).includes(normalizeWS(op.pattern));
+      else hit = line.includes(op.pattern);
+      if (hit) hits.push(i + 1);
+    }
+    if (hits.length === 0) continue;
+    total += hits.length;
+
+    const rel = path.relative(ctx.cwd, abs).replace(/\\/g, '/');
+
+    if (c === 0) {
+      for (const ln of hits) out.push(`${rel}:${ln}: ${lines[ln - 1]}`);
+      continue;
+    }
+
+    out.push(`--- ${rel} ---`);
+    const hitSet = new Set(hits);
+    const ranges: [number, number][] = [];
+    for (const ln of hits) {
+      const s = Math.max(1, ln - c);
+      const e = Math.min(lines.length, ln + c);
+      const last = ranges[ranges.length - 1];
+      if (last && s <= last[1] + 1) last[1] = Math.max(last[1], e);
+      else ranges.push([s, e]);
+    }
+    for (let r = 0; r < ranges.length; r++) {
+      const [s, e] = ranges[r];
+      for (let ln = s; ln <= e; ln++) {
+        const marker = hitSet.has(ln) ? '>' : ' ';
+        out.push(`${rel}:${ln}:${marker} ${lines[ln - 1]}`);
+      }
+      if (r < ranges.length - 1) out.push('...');
+    }
+  }
+
+  const label = total === 1 ? 'match' : 'matches';
+  return {
+    op, status: 'ok',
+    output: [`${total} ${label}`, ...out].join('\n'),
+    matchCount: total,
+  };
+}
+
+async function applyList(op: ListOperation, ctx: Ctx): Promise<OperationResult> {
+  const abs = path.join(ctx.cwd, op.path);
+  if (!await fileExistsAt(abs, ctx)) {
+    return { op, status: 'failed', error: `directory not found: ${op.path}` };
+  }
+  if (!await isDirectoryAt(abs, ctx)) {
+    return { op, status: 'failed', error: `not a directory: ${op.path}` };
+  }
+
+  const exts = op.extensions ?? [];
+  const exSet = new Set(op.exclude ?? []);
+  const names: string[] = [];
+  for (const name of await listDirAt(abs, ctx)) {
+    if (exSet.has(name)) continue;
+    const childAbs = path.join(abs, name);
+    const isDir = await isDirectoryAt(childAbs, ctx);
+    if (!isDir && exts.length > 0) {
+      if (!exts.some(ext => name.endsWith(ext))) continue;
+    }
+    names.push(isDir ? name + '/' : name);
+  }
+
+  const label = names.length === 1 ? 'entry' : 'entries';
+  return {
+    op, status: 'ok',
+    output: [`${names.length} ${label}`, ...names].join('\n'),
+  };
 }
 
 function timestamp(): string {

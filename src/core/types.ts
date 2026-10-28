@@ -75,8 +75,31 @@ export interface InsertBeforeOperation extends OperationBase {
   inline?: boolean;
 }
 
+export interface ReadOperation extends OperationBase {
+  op: 'read';
+  path: string;
+  from?: number;
+  to?: number;
+}
+
+export interface SearchOperation extends OperationBase {
+  op: 'search';
+  path: string;
+  pattern: string;
+  match: MatchMode;
+  context?: number;
+}
+
+export interface ListOperation extends OperationBase {
+  op: 'list';
+  path: string;
+  extensions?: string[];
+  exclude?: string[];
+}
+
 export type Operation =
   | ({ op: 'mkdir'; path: string } & OperationBase)
+
   | ({ op: 'delete'; path: string; recursive: boolean } & OperationBase)
   | ({ op: 'write'; path: string; content: string; encoding?: string } & OperationBase)
   | RenameOperation
@@ -86,7 +109,11 @@ export type Operation =
   | InsertAfterOperation
   | InsertBeforeOperation
   | PatchFindOperation
-  | PatchLinesOperation;
+  | PatchLinesOperation
+  | ReadOperation
+  | SearchOperation
+  | ListOperation;
+
 
 
 export type OperationStatus = 'ok' | 'skipped' | 'failed' | 'would-apply';
@@ -98,7 +125,9 @@ export interface OperationResult {
   error?: string;
   diff?: { before: string; after: string };
   matchCount?: number;
+  output?: string;
 }
+
 
 export interface ApplyOptions {
   cwd: string;

@@ -34,7 +34,11 @@ const ALLOWED_ATTRS: Record<string, readonly string[]> = {
     'lines',
     'description',
   ],
+  read: ['path', 'lines', 'description'],
+  search: ['path', 'pattern', 'match', 'context', 'description'],
+  list: ['path', 'extensions', 'exclude', 'description'],
 };
+
 
 
 const ALLOWED_BLOCKS: Record<string, readonly string[]> = {
@@ -48,7 +52,11 @@ const ALLOWED_BLOCKS: Record<string, readonly string[]> = {
   'insert-after': ['CONTENT'],
   'insert-before': ['CONTENT'],
   patch: ['CONTENT', 'FIND', 'REPLACE'],
+  read: [],
+  search: [],
+  list: [],
 };
+
 
 const HEADER_RE = /^\[op:\s*([a-z][a-z0-9-]*)\]\s*$/;
 
@@ -445,7 +453,47 @@ function buildOperation(raw: RawOperation, filename?: string): Operation {
 
     }
 
+    case 'read': {
+      let from: number | undefined;
+      let to: number | undefined;
+      const linesAttr = attrs['lines'];
+      if (linesAttr !== undefined) {
+        const m = /^(\d+)\.\.(\d+)$/.exec(linesAttr);
+        if (!m) {
+          throw new GraftParseError(
+            `invalid 'lines' format '${linesAttr}', expected 'N..M'`, L, filename);
+        }
+        from = parseInt(m[1], 10);
+        to = parseInt(m[2], 10);
+        if (from < 1 || to < from) {
+          throw new GraftParseError(`invalid 'lines' range '${linesAttr}'`, L, filename);
+        }
+      }
+      return { op: 'read', path, from, to, description };
+    }
+
+    case 'search': {
+      const pattern = requireAttr(attrs, 'pattern', 'search', L, filename);
+      const match = parseMatchMode(attrs['match'], L, filename);
+      const context = attrs['context'] !== undefined
+        ? parseNonNegativeInt(attrs['context'], 'context', L, filename)
+        : undefined;
+      return { op: 'search', path, pattern, match, context, description };
+    }
+
+    case 'list': {
+      const splitList = (v: string | undefined): string[] | undefined => {
+        if (v === undefined) return undefined;
+        const parts = v.split(',').map(s => s.trim()).filter(s => s.length > 0);
+        return parts.length === 0 ? undefined : parts;
+      };
+      const extensions = splitList(attrs['extensions']);
+      const exclude = splitList(attrs['exclude']);
+      return { op: 'list', path, extensions, exclude, description };
+    }
+
     default:
       throw new GraftParseError(`unknown operation '${opName}'`, L, filename);
   }
 }
+

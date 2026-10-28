@@ -62,8 +62,12 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
         case 'applyClipboard':
           void this.cmdApplyClipboard();
           break;
+        case 'copy':
+          void vscode.env.clipboard.writeText((msg as any).text);
+          break;
       }
     });
+
 
     void this.refresh();
   }
@@ -144,13 +148,16 @@ export class GraftPanelProvider implements vscode.WebviewViewProvider {
     } else if (result.alreadyApplied) {
       payload.globalMessage = 'Already applied on ' + (result.appliedRecord?.appliedAt || 'unknown');
     } else {
-      payload.ops = (result.results || []).map(r => ({
+      payload.ops = (result.results || []).map((r, i) => ({
+        index: i + 1,
         op: r.op.op,
-        path: r.op.path,
+        path: (r.op as any).path || '',
         description: (r.op as any).description || '',
         status: r.status,
-        error: r.error || r.reason || ''
+        error: r.error || r.reason || '',
+        output: r.output || ''
       }));
+
     }
     this.broadcast(payload);
   }
@@ -533,12 +540,14 @@ function buildHtml(colors: Record<string, string>): string {
     table-layout: fixed;
   }
   th, td {
-    padding: 6px 10px;
+    box-sizing: border-box;
+    padding: 6px 8px;
     border-bottom: 1px solid var(--vscode-panel-border);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
+
   th {
     font-weight: 600;
     color: var(--vscode-descriptionForeground);
@@ -547,6 +556,11 @@ function buildHtml(colors: Record<string, string>): string {
     background: var(--vscode-editor-background);
     z-index: 1;
   }
+  .col-idx { width: 38px; text-align: right; }
+  .col-action { width: 90px; }
+  .col-status { width: 70px; }
+
+
   tbody tr:hover { background: var(--vscode-list-hoverBackground); cursor: pointer; }
   .empty-row {
     text-align: center;
@@ -584,11 +598,54 @@ function buildHtml(colors: Record<string, string>): string {
     font-size: 11px;
     line-height: 1.6;
   }
-  .details-content .label { font-weight: 600; color: var(--vscode-descriptionForeground); user-select: none; }
+  .details-content .label { font-weight: 600; color: var(--vscode-descriptionForeground); }
+
   .details-content .error-text { color: var(--vscode-errorForeground); }
   .details-content .error-text .label { color: var(--vscode-errorForeground); }
   .details-content .desc-text { color: var(--vscode-foreground); font-style: italic; }
 
+
+  /* Report section */
+  .report-section {
+    flex: 1;
+    min-height: 120px;
+    display: flex;
+    flex-direction: column;
+    border-top: 1px solid var(--vscode-panel-border);
+    background: var(--vscode-editor-background);
+    overflow: hidden;
+  }
+  .report-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 8px;
+    background: var(--vscode-panel-background);
+    border-bottom: 1px solid var(--vscode-panel-border);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--vscode-descriptionForeground);
+  }
+  .report-content {
+    flex: 1;
+    overflow: auto;
+    padding: 8px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    user-select: text;
+  }
+  .copy-btn {
+    background: transparent;
+    border: 1px solid var(--vscode-panel-border);
+    color: var(--vscode-foreground);
+    cursor: pointer;
+    padding: 2px 6px;
+    font-size: 10px;
+    border-radius: 2px;
+  }
+  .copy-btn:hover { background: var(--vscode-button-secondaryHoverBackground); }
 
   .status {
     padding: 6px 10px;
@@ -597,6 +654,7 @@ function buildHtml(colors: Record<string, string>): string {
     min-height: 1em;
     white-space: pre-wrap;
   }
+
   .status.ok { color: var(--vscode-testing-iconPassed, #73c991); }
   .status.error { color: var(--vscode-errorForeground, #f48771); }
   .status.info { color: var(--vscode-descriptionForeground); }
@@ -605,31 +663,46 @@ function buildHtml(colors: Record<string, string>): string {
 <body>
   <div class="toolbar">
     <button data-cmd="paste">Paste</button>
-    <button data-cmd="edit">Edit</button>
-    <button data-cmd="validate">Validate</button>
     <button data-cmd="apply">Apply</button>
     <button data-cmd="applyClipboard" class="primary">Apply Clipboard</button>
   </div>
+
   <div class="table-container">
     <table id="ops-table">
       <thead>
         <tr>
-          <th style="width: 120px;">Action</th>
-          <th style="width: auto;">File</th>
-          <th style="width: 100px;">Status</th>
+          <th class="col-idx">#</th>
+          <th class="col-action">Action</th>
+          <th>File</th>
+          <th class="col-status">Status</th>
         </tr>
+
+
       </thead>
       <tbody id="ops-body">
-        <tr><td colspan="3" class="empty-row">(no changes file)</td></tr>
+        <tr><td colspan="4" class="empty-row">(no changes file)</td></tr>
       </tbody>
     </table>
   </div>
+  <div class="report-section" id="report-section" style="display: none;">
+    <div class="report-header">
+      <span>Query and Apply Report</span>
+      <button id="copy-all-btn" class="copy-btn">Copy All</button>
+    </div>
+    <div class="report-content" id="report-content"></div>
+  </div>
   <div class="status" id="status"></div>
+
 
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const opsBody = document.getElementById('ops-body');
     const statusEl = document.getElementById('status');
+    const reportSection = document.getElementById('report-section');
+    const reportContent = document.getElementById('report-content');
+    const copyAllBtn = document.getElementById('copy-all-btn');
+    let currentOpsData = null;
+
 
     document.querySelectorAll('button[data-cmd]').forEach(function (btn) {
       btn.addEventListener('click', function () {
@@ -657,35 +730,45 @@ function buildHtml(colors: Record<string, string>): string {
     }
 
     function renderOperations(data) {
+      currentOpsData = data;
       opsBody.innerHTML = '';
       
       if (data.globalMessage) {
         const tr = document.createElement('tr');
-        tr.innerHTML = '<td colspan="3" class="empty-row" style="color: var(--vscode-testing-iconPassed);">' + data.globalMessage + '</td>';
+        tr.innerHTML = '<td colspan="4" class="empty-row" style="color: var(--vscode-testing-iconPassed);">' + data.globalMessage + '</td>';
         opsBody.appendChild(tr);
+        reportSection.style.display = 'none';
         return;
       }
 
       if (data.parseError) {
-
         const tr = document.createElement('tr');
-        tr.innerHTML = '<td colspan="3" class="status-failed" style="font-weight:bold;">Syntax Error: ' + data.parseError + '</td>';
+        tr.innerHTML = '<td colspan="4" class="status-failed" style="font-weight:bold;">Syntax Error: ' + data.parseError + '</td>';
         opsBody.appendChild(tr);
+        reportSection.style.display = 'none';
         return;
       }
 
       if (!data.ops || data.ops.length === 0) {
         const tr = document.createElement('tr');
-        tr.innerHTML = '<td colspan="3" class="empty-row">(no operations)</td>';
+        tr.innerHTML = '<td colspan="4" class="empty-row">(no operations)</td>';
         opsBody.appendChild(tr);
+        reportSection.style.display = 'none';
         return;
       }
+
+      const reportLines = [];
 
       data.ops.forEach(function(op) {
         const tr = document.createElement('tr');
         
+        const idxTd = document.createElement('td');
+        idxTd.className = 'col-idx';
+        idxTd.textContent = '#' + op.index;
+        idxTd.style.color = 'var(--vscode-descriptionForeground)';
+
         const actionTd = document.createElement('td');
-        actionTd.className = 'op-' + op.op;
+        actionTd.className = 'op-' + op.op + ' col-action';
         actionTd.textContent = op.op;
         
         const pathTd = document.createElement('td');
@@ -694,21 +777,23 @@ function buildHtml(colors: Record<string, string>): string {
         pathTd.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
         
         const statusTd = document.createElement('td');
-        statusTd.className = 'status-' + op.status;
+        statusTd.className = 'status-' + op.status + ' col-status';
         statusTd.textContent = formatStatus(op.status, data.isDryRun);
 
         
+        tr.appendChild(idxTd);
         tr.appendChild(actionTd);
         tr.appendChild(pathTd);
         tr.appendChild(statusTd);
         
-        // Details row for ALL operations
+        // Details row
         const detTr = document.createElement('tr');
         detTr.className = 'details-row';
         const detTd = document.createElement('td');
-        detTd.colSpan = 3;
+        detTd.colSpan = 4;
         
-        let html = '<div class="details-content">';
+        let html = '<div class="details-content" style="position: relative;">';
+        html += '<button class="copy-btn copy-op-btn" data-index="' + op.index + '" style="position: absolute; right: 10px; top: 10px;">Copy</button>';
         html += '<div><span class="label">Full path:</span> ' + op.path + '</div>';
         if (op.description) {
           html += '<div><span class="label">Description:</span> <span class="desc-text">' + op.description + '</span></div>';
@@ -728,8 +813,40 @@ function buildHtml(colors: Record<string, string>): string {
         
         opsBody.appendChild(tr);
         opsBody.appendChild(detTr);
+
+        // Build report string
+        let state = formatStatus(op.status, data.isDryRun);
+        let block = '[' + '#' + op.index + ' ' + op.op + '] ' + op.path + ' \\u2014 ' + state;
+        if (op.description) block += '\\n  Description: ' + op.description;
+        if (op.error) block += '\\n  Error: ' + op.error;
+        if (op.output) block += '\\n' + op.output;
+        reportLines.push(block);
       });
+
+      reportContent.textContent = reportLines.join('\\n\\n');
+      reportSection.style.display = 'flex';
     }
+
+    copyAllBtn.addEventListener('click', function () {
+      const text = reportContent.textContent;
+      if (text) vscode.postMessage({ type: 'copy', text: text });
+    });
+
+    opsBody.addEventListener('click', function (e) {
+      if (e.target.classList.contains('copy-op-btn')) {
+        const idx = parseInt(e.target.getAttribute('data-index'), 10);
+        const op = currentOpsData.ops.find(o => o.index === idx);
+        if (op) {
+          let state = formatStatus(op.status, currentOpsData.isDryRun);
+          let text = '[' + '#' + op.index + ' ' + op.op + '] ' + op.path + ' \\u2014 ' + state;
+          if (op.description) text += '\\nDescription: ' + op.description;
+          if (op.error) text += '\\nError: ' + op.error;
+          if (op.output) text += '\\n' + op.output;
+          vscode.postMessage({ type: 'copy', text: text });
+        }
+      }
+    });
+
 
     window.addEventListener('message', function (e) {
       const m = e.data;
