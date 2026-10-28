@@ -38,5 +38,12 @@
     REPLACE>>>
     THEN>>>
 
-## 3. Future Ideas
+## 3. Known Issues / Tech Debt
+
+- **Query Status Labels in UI**: Currently, query operations (`read`, `search`, `list`) show as `Applied` in the UI table when validated, because they execute during the `dryRun` to generate the report.
+  - *Proposed UX fix*: During `Validate` (`dryRun`), queries should probably show as `Ready`. When actually applied, they should show as `Queried` or similar.
+  - *Complication*: Pure-query grafts might not require hitting `Apply` at all, making the state transition unclear. Mixed grafts (queries + modifications) need a consistent visual flow. Discuss before implementing.
+
+## 4. Future Ideas
+
 - **v0.9.0**: Publish to VS Code Marketplace and npm.
