@@ -1,4 +1,4 @@
-# `.graft` file format — v1
+# `.graft` file format — v1.2
 
 ## Overview
 

@@ -31,7 +31,7 @@ A `.graft` file consists of a sequence of operations. It is idempotent, meaning 
     path: src/**/*.ts
     pattern: TODO
 
-See [docs/format-v1.md](docs/format-v1.md) for the full specification.
+See [docs/format-v1.2.md](docs/format-v1.2.md) for the full specification.
 
 ## VS Code Extension Features
 
