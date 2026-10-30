@@ -25,6 +25,11 @@
   "keywords": ["patch", "diff", "apply", "cli"],
   "author": "Andoni Galardi",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/andoni-galardi/graft.git"
+  },
+  "homepage": "https://github.com/andoni-galardi/graft#readme",
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.0.4",

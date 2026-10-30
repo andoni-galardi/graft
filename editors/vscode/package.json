@@ -18,6 +18,7 @@
     "url": "https://github.com/andoni-galardi/graft.git",
     "directory": "editors/vscode"
   },
+  "homepage": "https://github.com/andoni-galardi/graft#readme",
   "contributes": {
     "commands": [
       {

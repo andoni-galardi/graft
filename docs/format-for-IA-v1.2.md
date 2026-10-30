@@ -31,6 +31,9 @@ Operation definitions:
 - **search**: required attributes `path`, `pattern`. Optional: `match`, `context`. No blocks.
 - **list**: required attributes `path`. Optional: `extensions`, `exclude`. No blocks.
 
+All operations also accept an optional `description` attribute (free-form text,
+ignored by the engine, intended as a human-readable label shown in tooling).
+
 ## Behavioral Rules
 
 **`patch` (find/replace):**

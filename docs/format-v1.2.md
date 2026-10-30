@@ -27,6 +27,9 @@ text, not syntax.
   exactly `NAME>>>`, use a different strategy (split into two operations).
 
 ## Operations
+All operations accept an optional `description` attribute (free-form text,
+ignored by the engine). It is intended as a human-readable label shown in
+tooling (e.g., the VS Code extension).
 
 ### mkdir
 Creates a directory (recursive).
