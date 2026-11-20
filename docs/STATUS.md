@@ -15,6 +15,13 @@
 ## Known Issues
 
 - **Query Status Labels in UI**: query operations show as `Applied` after `Validate`. See [docs/ARCHITECTURE.md](ARCHITECTURE.md#open-design-questions) for the open design question.
+- **`patch` fails on CRLF line endings**: reports "find block not found" even though `search` finds the text. Workaround: shorter `FIND`, `match: normalized`, or `write` if the file is small. Fix pending.
+- **`patch` with `FIND` starting with `#`**: fails unexpectedly on otherwise-clean files. Workaround: strip the leading `#`. Fix pending.
+
+## Planned Improvements
+
+- **`list` is non-recursive**: only reads the direct level. Consider a `recursive: true` attribute.
+- **`search` lacks `extensions` / `exclude`**: those are `list`-only. Consider aligning attribute sets across query operations.
 
 ## Next
 
