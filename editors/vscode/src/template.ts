@@ -6,5 +6,5 @@ export const TEMPLATE = `# Graft changes file
 #   Graft: Apply changes file
 #
 # Format reference:
-# https://github.com/andoni-galardi/graft/blob/main/docs/format-v1.md
+# https://github.com/andoni-galardi/graft/blob/main/docs/format-v1.2.md
 `;
